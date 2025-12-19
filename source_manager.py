@@ -1,133 +1,112 @@
-# Script Version: 0.2.5 | Phase 1: Agent Foundation
-# Description: Unified utility for rate-limited fetching and parsing.
-# Implementation: "Double-Buffer" rate limiter. Enforces 2x the requested delay to guarantee 
-# compliance against OS jitter and ensure "Good Netizen" status.
+# Script Version: 0.2.7 | Phase 1: Agent Foundation
+# Description: Unified utility for rate-limited fetching and parsing with deduplication.
+# Implementation: Added visited_urls registry and automated PDF handling.
 
 import time
 import httpx
 import re
-import sys
+import os
+import tempfile
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Set
 
-# --- Extraction Imports ---
 try:
     import fitz  # PyMuPDF
 except ImportError:
-    print("[WARNING] PyMuPDF (fitz) not found. PDF extraction will fail.")
     fitz = None
 
 try:
     import trafilatura
 except ImportError:
-    print("[WARNING] trafilatura not found. Web extraction will be basic.")
     trafilatura = None
 
 class SourceManager:
     """
-    Handles fetching and parsing of external sources with a 100% safety buffer rate limiter.
-    If a delay of X is required, this manager enforces a delay of 2X to ensure that 
-    even with OS-level timer jitter, the minimum threshold is never undershot.
+    Handles fetching and parsing of external sources with buffered rate limiting.
+    Includes deduplication to prevent redundant processing of the same URL.
     """
     def __init__(self, delay_ms: int = 500):
-        # IMPLEMENTATION DETAIL: 100% Safety Buffer
-        # To pass a test requiring 1000ms, we must target 2000ms.
         self.requested_delay = delay_ms / 1000.0
         self.enforced_delay = self.requested_delay * 2.0
-        
-        # Initialize to a time in the past
         self.last_request_completion_time = time.perf_counter() - self.enforced_delay
+        self.visited_urls: Set[str] = set()
         
         self.headers = {
-            "User-Agent": "GauntletResearchBot/0.2.5 (Educational Research Project; Double-Buffer Rate Limiting)"
+            "User-Agent": "GauntletResearchBot/0.2.7 (Educational Research Project; Double-Buffer Rate Limiting)"
         }
-        print(f"[SOURCE MANAGER] Initialized.")
-        print(f"[SOURCE MANAGER] Requested Idle Gap: {self.requested_delay:.3f}s")
-        print(f"[SOURCE MANAGER] Enforced Safety Gap: {self.enforced_delay:.3f}s (100% Buffer)")
+        print(f"[SOURCE MANAGER] Initialized with deduplication.")
 
     def _wait_for_slot(self):
-        """
-        Blocks execution until the enforced safety gap (2x requested) has passed.
-        This ensures we always exceed the minimum required threshold.
-        """
         target_time = self.last_request_completion_time + self.enforced_delay
-        
         while True:
             now = time.perf_counter()
             remaining = target_time - now
-            
             if remaining <= 0:
                 break
-            
-            # If more than 10ms remains, sleep to save CPU
             if remaining > 0.010:
                 time.sleep(remaining / 2.0)
-            # Otherwise spin-lock for the final micro-seconds
-            else:
-                pass
 
-    def fetch_web_content(self, url: str) -> Dict[str, Any]:
+    def fetch_and_extract(self, url: str) -> Dict[str, Any]:
         """
-        Fetches and extracts clean text from a URL with buffered rate limiting.
+        Fetches content, handles deduplication, and routes to appropriate parser (HTML/PDF).
         """
-        # Ensure the safety gap is met
+        if url in self.visited_urls:
+            print(f"[SOURCE MANAGER] Skipping already visited URL: {url}")
+            return {"url": url, "status": "skipped", "content": ""}
+
         self._wait_for_slot()
+        self.visited_urls.add(url)
         
-        start_time = time.perf_counter()
-        print(f"[SOURCE MANAGER] Dispatching request: {url}")
-        
+        print(f"[SOURCE MANAGER] Fetching: {url}")
         try:
             with httpx.Client(headers=self.headers, timeout=30.0, follow_redirects=True) as client:
                 response = client.get(url)
                 response.raise_for_status()
-                
-                # Record completion time IMMEDIATELY after network activity
                 self.last_request_completion_time = time.perf_counter()
                 
+                content_type = response.headers.get("content-type", "").lower()
+                
+                # Handle PDF
+                if "application/pdf" in content_type or url.lower().endswith(".pdf"):
+                    return self._process_pdf_binary(url, response.content)
+                
+                # Handle HTML
                 if trafilatura:
-                    content = trafilatura.extract(response.text, include_comments=False, include_tables=True)
+                    content = trafilatura.extract(response.text, include_comments=False)
                 else:
                     content = re.sub(r'<[^>]+>', '', response.text)
-                
-                print(f"[SOURCE MANAGER] Fetch complete. Network time: {self.last_request_completion_time - start_time:.4f}s")
                 
                 return {
                     "url": url,
                     "content": content or "No content extracted.",
                     "status": "success",
-                    "content_type": response.headers.get("content-type", "text/html")
+                    "type": "html"
                 }
         except Exception as e:
             self.last_request_completion_time = time.perf_counter()
-            print(f"[ERROR] SourceManager failed: {str(e)}")
-            return {"url": url, "content": "", "status": "error", "error": str(e)}
+            print(f"[ERROR] [SourceManager] Failed {url}: {e}")
+            return {"url": url, "status": "error", "error": str(e)}
 
-    def extract_local_file(self, file_path: str) -> str:
-        """
-        Extracts text from local files (PDF, TXT, MD, etc.)
-        """
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        suffix = path.suffix.lower()
-        print(f"[SOURCE MANAGER] Extracting local file: {path.name}")
-
-        if suffix == ".pdf":
-            if not fitz:
-                raise ImportError("PyMuPDF (fitz) is required for PDF extraction.")
-            try:
-                text_content = []
-                with fitz.open(path) as doc:
-                    for page in doc:
-                        text_content.append(page.get_text())
-                return "\n".join(text_content)
-            except Exception as e:
-                raise ValueError(f"Failed to parse PDF: {str(e)}")
-
+    def _process_pdf_binary(self, url: str, binary_data: bytes) -> Dict[str, Any]:
+        """Saves binary PDF to temp file and extracts text."""
+        if not fitz:
+            return {"url": url, "status": "error", "error": "PyMuPDF not installed"}
+            
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(binary_data)
+            tmp_path = tmp.name
+            
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
-        except (UnicodeDecodeError, Exception):
-            with open(path, "r", encoding="latin-1") as f:
-                return f.read()
+            text_content = []
+            with fitz.open(tmp_path) as doc:
+                for page in doc:
+                    text_content.append(page.get_text())
+            return {
+                "url": url,
+                "content": "\n".join(text_content),
+                "status": "success",
+                "type": "pdf"
+            }
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)

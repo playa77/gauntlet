@@ -1,5 +1,6 @@
-# Script Version: 0.1.3 | Phase 0: Foundation
-# Description: Main GUI for Gauntlet. Handles background threading and UI updates.
+# Script Version: 0.1.4 | Phase 1: Agent Foundation
+# Description: Main GUI for Gauntlet with Manual Approval Gate.
+# Implementation: Added two-stage research process (Plan -> Approve -> Execute).
 
 import sys
 import os
@@ -19,32 +20,40 @@ sys.excepthook = crash_handler
 
 class ResearchWorker(QThread):
     finished = pyqtSignal(dict)
+    plan_ready = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, topic, model_id):
+    def __init__(self, topic, model_id, mode="full", state=None):
         super().__init__()
         self.topic = topic
         self.model_id = model_id
+        self.mode = mode
+        self.state = state
 
     def run(self):
         try:
             orchestrator = ResearchOrchestrator(self.model_id)
-            result = orchestrator.run(self.topic, self.model_id)
-            self.finished.emit(result)
+            if self.mode == "plan":
+                questions = orchestrator.plan_only(self.topic)
+                self.plan_ready.emit(questions)
+            else:
+                result = orchestrator.run_full(self.state)
+                self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
 
 class GauntletUI(QMainWindow):
     def __init__(self, log_signal):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.1.3)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.1.4)")
         self.resize(1200, 800)
         
         self.settings_manager = SettingsManager()
         self.model_manager = ModelManager()
-        
         self.log_signal = log_signal
         self.log_signal.connect(self._append_log)
+        
+        self.current_research_state = None
         
         self._init_ui()
         self._populate_models()
@@ -59,12 +68,14 @@ class GauntletUI(QMainWindow):
         self.topic_input = QTextEdit()
         self.topic_input.setPlaceholderText("Enter research topic...")
         self.topic_input.setMaximumHeight(60)
-        self.start_btn = QPushButton("Start Research")
-        self.start_btn.setFixedWidth(150)
-        self.start_btn.setFixedHeight(60)
-        self.start_btn.clicked.connect(self._start_research)
+        
+        self.action_btn = QPushButton("Generate Plan")
+        self.action_btn.setFixedWidth(150)
+        self.action_btn.setFixedHeight(60)
+        self.action_btn.clicked.connect(self._handle_action)
+        
         input_row.addWidget(self.topic_input)
-        input_row.addWidget(self.start_btn)
+        input_row.addWidget(self.action_btn)
         layout.addLayout(input_row)
 
         # Model Selection
@@ -93,37 +104,74 @@ class GauntletUI(QMainWindow):
         self.model_combo.clear()
         for m in self.model_manager.get_all():
             self.model_combo.addItem(m['name'], m['id'])
+        idx = self.model_combo.findData(self.settings_manager.get("model_id"))
+        if idx >= 0: self.model_combo.setCurrentIndex(idx)
+
+    def _handle_action(self):
+        if self.action_btn.text() == "Generate Plan":
+            self._start_planning()
+        elif self.action_btn.text() == "Approve & Research":
+            self._start_research()
+
+    def _start_planning(self):
+        topic = self.topic_input.toPlainText().strip()
+        if not topic: return
+
+        self.action_btn.setEnabled(False)
+        self.journal.append(f"\n>>> PLANNING PHASE INITIATED: {topic}")
         
-        saved_model = self.settings_manager.get("model_id")
-        idx = self.model_combo.findData(saved_model)
-        if idx >= 0: 
-            self.model_combo.setCurrentIndex(idx)
+        self.worker = ResearchWorker(topic, self.model_combo.currentData(), mode="plan")
+        self.worker.plan_ready.connect(self._on_plan_ready)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    def _on_plan_ready(self, questions):
+        self.action_btn.setEnabled(True)
+        self.action_btn.setText("Approve & Research")
+        self.action_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
+        
+        # Initialize state for the next phase
+        self.current_research_state = {
+            "research_topic": self.topic_input.toPlainText().strip(),
+            "user_constraints": {},
+            "current_phase": "planning",
+            "logs": [f"Plan approved with {len(questions)} questions."],
+            "research_questions": questions,
+            "sources": [],
+            "knowledge_fragments": [],
+            "final_report": "",
+            "is_complete": False,
+            "model_id": self.model_combo.currentData()
+        }
+        
+        # Show plan in preview
+        plan_md = "### Proposed Research Plan\n\nPlease review the questions below. Click **Approve & Research** to begin data collection.\n\n"
+        for q in questions:
+            plan_md += f"- [{q.get('priority', 1)}] {q.get('question')}\n"
+        self.preview.setMarkdown(plan_md)
 
     def _start_research(self):
-        topic = self.topic_input.toPlainText().strip()
-        model_id = self.model_combo.currentData()
-        if not topic: 
-            return
-
-        self.start_btn.setEnabled(False)
-        self.journal.append(f"\n>>> RESEARCH INITIATED: {topic}")
-        self.journal.append(f">>> MODEL: {model_id}\n")
-        self.settings_manager.set("model_id", model_id)
-
-        self.worker = ResearchWorker(topic, model_id)
+        self.action_btn.setEnabled(False)
+        self.action_btn.setText("Researching...")
+        self.journal.append(">>> RESEARCH PHASE INITIATED. This may take several minutes.")
+        
+        self.worker = ResearchWorker(None, self.model_combo.currentData(), mode="full", state=self.current_research_state)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
 
     def _on_finished(self, result):
-        self.start_btn.setEnabled(True)
+        self.action_btn.setEnabled(True)
+        self.action_btn.setText("Generate Plan")
+        self.action_btn.setStyleSheet("")
         self.preview.setMarkdown(result.get("final_report", ""))
-        print("[UI] Research process completed successfully.")
+        print("[UI] Research process completed.")
 
     def _on_error(self, err):
-        self.start_btn.setEnabled(True)
+        self.action_btn.setEnabled(True)
+        self.action_btn.setText("Generate Plan")
         print(f"[UI ERROR] {err}")
-        QMessageBox.critical(self, "Research Error", f"An error occurred during the research process:\n\n{err}")
+        QMessageBox.critical(self, "Error", f"Process failed:\n\n{err}")
 
     @pyqtSlot(str)
     def _append_log(self, text):
@@ -132,18 +180,11 @@ class GauntletUI(QMainWindow):
 def main():
     setup_project_files()
     load_dotenv()
-    
     app = QApplication(sys.argv)
-    
-    # Setup logging redirection
     log_stream = LogStream()
     sys.stdout = log_stream
-    
     window = GauntletUI(log_stream.log_signal)
-    
-    # Handle Ctrl+C
     signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
-    
     window.show()
     sys.exit(app.exec())
 

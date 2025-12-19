@@ -1,4 +1,4 @@
-# Script Version: 0.1.2 | Phase 0: Foundation
+# Script Version: 0.1.3 | Phase 0: Foundation
 # Description: Manages application settings and model configurations for Gauntlet.
 
 import json
@@ -12,8 +12,7 @@ class SettingsManager:
     DEFAULT_SETTINGS = {
         "api_timeout": 360,
         "font_size": 15,
-        "model_id": "anthropic/claude-3.5-sonnet",
-        "system_prompt_id": None
+        "model_id": "google/gemini-2.0-flash-lite-preview-02-05:free"
     }
 
     def __init__(self, filename="settings.json"):
@@ -23,7 +22,6 @@ class SettingsManager:
 
     def load(self):
         if not self.filepath.exists():
-            print(f"[SETTINGS] {self.filepath} not found. Using defaults.")
             return
         try:
             with open(self.filepath, "r") as f:
@@ -60,7 +58,6 @@ class ModelManager:
 
     def load(self):
         if not self.filepath.exists():
-            print(f"[MODELS] {self.filepath} not found. Initializing empty list.")
             self.models = []
             return
         try:
@@ -77,7 +74,6 @@ class ModelManager:
         try:
             with open(self.filepath, "w") as f:
                 json.dump(data, f, indent=2)
-            print(f"[INFO] {self.filepath} updated.")
         except IOError as e:
             print(f"[ERROR] Failed to save models.json: {e}", file=sys.stderr)
 

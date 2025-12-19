@@ -1,4 +1,4 @@
-# Script Version: 0.1.2 | Phase 0: Foundation
+# Script Version: 0.1.3 | Phase 0: Foundation
 # Description: Main GUI for Gauntlet. Handles background threading and UI updates.
 
 import sys
@@ -37,7 +37,7 @@ class ResearchWorker(QThread):
 class GauntletUI(QMainWindow):
     def __init__(self, log_signal):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.1.2)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.1.3)")
         self.resize(1200, 800)
         
         self.settings_manager = SettingsManager()
@@ -71,16 +71,16 @@ class GauntletUI(QMainWindow):
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.setFixedWidth(300)
+        self.model_combo.setFixedWidth(400)
         model_row.addWidget(self.model_combo)
         model_row.addStretch()
         layout.addLayout(model_row)
 
-        # Splitter
+        # Splitter for Journal and Preview
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.journal = QTextEdit()
         self.journal.setReadOnly(True)
-        self.journal.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: monospace;")
+        self.journal.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Monaco', monospace;")
         
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
@@ -90,18 +90,24 @@ class GauntletUI(QMainWindow):
         layout.addWidget(splitter)
 
     def _populate_models(self):
+        self.model_combo.clear()
         for m in self.model_manager.get_all():
             self.model_combo.addItem(m['name'], m['id'])
-        idx = self.model_combo.findData(self.settings_manager.get("model_id"))
-        if idx >= 0: self.model_combo.setCurrentIndex(idx)
+        
+        saved_model = self.settings_manager.get("model_id")
+        idx = self.model_combo.findData(saved_model)
+        if idx >= 0: 
+            self.model_combo.setCurrentIndex(idx)
 
     def _start_research(self):
         topic = self.topic_input.toPlainText().strip()
         model_id = self.model_combo.currentData()
-        if not topic: return
+        if not topic: 
+            return
 
         self.start_btn.setEnabled(False)
-        self.journal.append(f"\n>>> Researching: {topic} using {model_id}\n")
+        self.journal.append(f"\n>>> RESEARCH INITIATED: {topic}")
+        self.journal.append(f">>> MODEL: {model_id}\n")
         self.settings_manager.set("model_id", model_id)
 
         self.worker = ResearchWorker(topic, model_id)
@@ -116,7 +122,8 @@ class GauntletUI(QMainWindow):
 
     def _on_error(self, err):
         self.start_btn.setEnabled(True)
-        QMessageBox.critical(self, "Error", err)
+        print(f"[UI ERROR] {err}")
+        QMessageBox.critical(self, "Research Error", f"An error occurred during the research process:\n\n{err}")
 
     @pyqtSlot(str)
     def _append_log(self, text):
@@ -125,12 +132,18 @@ class GauntletUI(QMainWindow):
 def main():
     setup_project_files()
     load_dotenv()
+    
     app = QApplication(sys.argv)
+    
+    # Setup logging redirection
     log_stream = LogStream()
     sys.stdout = log_stream
+    
     window = GauntletUI(log_stream.log_signal)
     
+    # Handle Ctrl+C
     signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
+    
     window.show()
     sys.exit(app.exec())
 

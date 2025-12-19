@@ -1,89 +1,77 @@
-# Script Version: 0.1.2 | Phase 0: Foundation
-# Description: LangGraph orchestrator for the research workflow.
+# Script Version: 0.2.1 | Phase 1: Agent Foundation
+# Description: LangGraph orchestrator managing the multi-agent workflow.
 
-import time
 import os
 from typing import Dict
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from duckduckgo_search import DDGS
+
 from state import ResearchState
+from agents import DecomposeTopicAgent
 
 class ResearchOrchestrator:
     def __init__(self, model_id: str):
-        print(f"[ORCHESTRATOR] Initializing with model: {model_id}")
+        print(f"[ORCHESTRATOR] Initializing Phase 1 with model: {model_id}")
         
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key or api_key == "YOUR_API_KEY_HERE":
-            raise ValueError("OpenRouter API Key is not configured in .env")
+            raise ValueError("OpenRouter API Key is not configured in .env file.")
 
         self.llm = ChatOpenAI(
             model_name=model_id,
             openai_api_key=api_key,
             openai_api_base="https://openrouter.ai/api/v1",
-            temperature=0.7
+            temperature=0.2 # Low temperature for structural decomposition
         )
+        
+        # Initialize Agents
+        self.decompose_agent = DecomposeTopicAgent(self.llm)
         
         self.workflow = self._build_graph()
 
     def _build_graph(self):
         builder = StateGraph(ResearchState)
-        builder.add_node("search_node", self.search_node)
-        builder.add_node("synthesis_node", self.synthesis_node)
-        builder.set_entry_point("search_node")
-        builder.add_edge("search_node", "synthesis_node")
-        builder.add_edge("synthesis_node", END)
+        
+        # Define Nodes
+        builder.add_node("decompose_node", self.decompose_node)
+        builder.add_node("search_node", self.search_node_placeholder)
+        
+        # Define Flow
+        builder.set_entry_point("decompose_node")
+        builder.add_edge("decompose_node", "search_node")
+        builder.add_edge("search_node", END)
+        
         return builder.compile()
 
-    def search_node(self, state: ResearchState) -> Dict:
-        topic = state["research_topic"]
-        print(f"[AGENT] Searching for: {topic}")
+    def decompose_node(self, state: ResearchState) -> Dict:
+        """Node to break down the topic into research questions."""
+        print("[ORCHESTRATOR] Entering Decompose Node...")
+        questions = self.decompose_agent.run(state["research_topic"], state["user_constraints"])
         
-        # Good netizen delay
-        time.sleep(0.5)
-        
-        results = []
-        try:
-            with DDGS() as ddgs:
-                # Convert generator to list immediately to avoid runtime issues
-                search_results = list(ddgs.text(topic, max_results=5))
-                for r in search_results:
-                    results.append(f"Source: {r['href']}\nTitle: {r['title']}\nSnippet: {r['body']}")
-        except Exception as e:
-            print(f"[ERROR] Search failed: {e}")
-            results = [f"Search failed: {str(e)}"]
-
+        # Initialize question status
+        for q in questions:
+            q["status"] = "pending"
+            
         return {
-            "sources": results,
-            "logs": state["logs"] + [f"Found {len(results)} sources."],
+            "research_questions": questions,
+            "logs": state["logs"] + [f"Decomposed topic into {len(questions)} questions."],
             "current_phase": "exploration"
         }
 
-    def synthesis_node(self, state: ResearchState) -> Dict:
-        topic = state["research_topic"]
-        sources_text = "\n\n".join(state["sources"])
-        print(f"[AGENT] Synthesizing report for: {topic}")
+    def search_node_placeholder(self, state: ResearchState) -> Dict:
+        """Temporary placeholder for the Phase 2 search agent integration."""
+        print("[ORCHESTRATOR] Search node reached (Phase 1 Placeholder)")
         
-        time.sleep(0.5)
-
-        prompt = f"""
-        You are a senior research analyst. Topic: {topic}
-        Sources: {sources_text}
-        
-        Produce a detailed Markdown research report.
-        """
-        
-        try:
-            response = self.llm.invoke(prompt)
-            report = response.content
-        except Exception as e:
-            report = f"Synthesis failed: {str(e)}"
-        
+        # Construct a simple summary for the UI preview
+        summary = f"# Research Plan: {state['research_topic']}\n\n"
+        summary += "## Identified Research Questions\n\n"
+        for q in state["research_questions"]:
+            summary += f"- **Priority {q.get('priority', 'N/A')}**: {q.get('question', 'N/A')}\n"
+            
         return {
-            "final_report": report,
-            "logs": state["logs"] + ["Synthesis complete."],
-            "current_phase": "synthesis",
-            "is_complete": True
+            "logs": state["logs"] + ["Search phase initiated (Placeholder)."],
+            "is_complete": True,
+            "final_report": summary
         }
 
     def run(self, topic: str, model_id: str):
@@ -91,8 +79,10 @@ class ResearchOrchestrator:
             "research_topic": topic,
             "user_constraints": {},
             "current_phase": "starting",
-            "logs": [f"Starting research on: {topic}"],
+            "logs": [f"Starting Phase 1 research on: {topic}"],
+            "research_questions": [],
             "sources": [],
+            "knowledge_fragments": [],
             "final_report": "",
             "is_complete": False,
             "model_id": model_id

@@ -1,6 +1,6 @@
-# Script Version: 0.2.8 | Phase 1: Agent Foundation
+# Script Version: 0.2.9 | Phase 1: Agent Foundation (Final)
 # Description: Specialized agents for the research workflow.
-# Implementation: Fixed httpx.utils.quote bug, resolved SSL ResourceWarning, and added CrossRef API.
+# Implementation: Includes Semantic Scholar for 2025 academic coverage.
 
 import json
 import re
@@ -127,7 +127,7 @@ class SourceQualityAgent:
 
 class AcademicSpecialistAgent:
     """
-    Queries scholarly APIs (arXiv, CrossRef) to find peer-reviewed sources.
+    Queries scholarly APIs (arXiv, Semantic Scholar) to find peer-reviewed sources.
     """
     def __init__(self, llm: ChatOpenAI, source_manager: Any):
         self.llm = llm
@@ -144,13 +144,11 @@ class AcademicSpecialistAgent:
             # 1. arXiv Search
             print(f"[AGENT] [Academic] Querying arXiv for: {query[:50]}...")
             arxiv_url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&start=0&max_results=3"
-            
             try:
                 self.source_manager._wait_for_slot()
                 with httpx.Client(timeout=20.0) as client:
                     resp = client.get(arxiv_url)
                     self.source_manager.last_request_completion_time = time.perf_counter()
-                    
                     if resp.status_code == 200:
                         root = ET.fromstring(resp.text)
                         for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
@@ -160,7 +158,6 @@ class AcademicSpecialistAgent:
                             for link in entry.findall('{http://www.w3.org/2005/Atom}link'):
                                 if link.attrib.get('title') == 'pdf':
                                     pdf_link = link.attrib.get('href')
-                            
                             academic_results.append({
                                 "url": pdf_link or entry.find('{http://www.w3.org/2005/Atom}id').text,
                                 "title": f"[arXiv] {title.strip()}",
@@ -171,29 +168,27 @@ class AcademicSpecialistAgent:
             except Exception as e:
                 print(f"[ERROR] [Academic] arXiv failed: {e}")
 
-            # 2. CrossRef Search (Metadata discovery)
-            print(f"[AGENT] [Academic] Querying CrossRef for: {query[:50]}...")
-            crossref_url = f"https://api.crossref.org/works?query={encoded_query}&rows=3"
+            # 2. Semantic Scholar Search (2025 Standard)
+            print(f"[AGENT] [Academic] Querying Semantic Scholar for: {query[:50]}...")
+            ss_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={encoded_query}&limit=3&fields=title,abstract,url,openAccessPdf"
             try:
                 self.source_manager._wait_for_slot()
                 with httpx.Client(timeout=20.0) as client:
-                    resp = client.get(crossref_url)
+                    resp = client.get(ss_url)
                     self.source_manager.last_request_completion_time = time.perf_counter()
-                    
                     if resp.status_code == 200:
                         data = resp.json()
-                        for item in data.get('message', {}).get('items', []):
-                            title = item.get('title', ["No Title"])[0]
-                            doi = item.get('DOI', "")
+                        for paper in data.get('data', []):
+                            pdf_info = paper.get('openAccessPdf')
                             academic_results.append({
-                                "url": f"https://doi.org/{doi}" if doi else item.get('URL', ""),
-                                "title": f"[CrossRef] {title}",
-                                "snippet": f"Publisher: {item.get('publisher', 'Unknown')}. DOI: {doi}",
+                                "url": pdf_info.get('url') if pdf_info else paper.get('url'),
+                                "title": f"[SemanticScholar] {paper.get('title')}",
+                                "snippet": paper.get('abstract', 'No abstract available.')[:500],
                                 "question_id": q['id'],
                                 "source_type": "academic"
                             })
             except Exception as e:
-                print(f"[ERROR] [Academic] CrossRef failed: {e}")
+                print(f"[ERROR] [Academic] Semantic Scholar failed: {e}")
 
         return academic_results
 

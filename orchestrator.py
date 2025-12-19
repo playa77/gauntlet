@@ -1,6 +1,6 @@
-# Script Version: 0.2.4 | Phase 1: Agent Foundation
+# Script Version: 0.2.5 | Phase 1: Agent Foundation (Final)
 # Description: LangGraph orchestrator managing the full Phase 1 linear workflow.
-# Implementation: Added synthesis_node and integrated SectionWriterAgent.
+# Implementation: Integrated Semantic Scholar and full linear synthesis.
 
 import os
 from typing import Dict, List
@@ -77,13 +77,8 @@ class ResearchOrchestrator:
         print("[ORCHESTRATOR] Node: Web Discovery")
         candidates = self.search_agent.run(state["research_questions"])
         qualified = self.quality_agent.run(candidates)
-        
         for src in qualified:
-            self.vector_store.add_source(
-                src['snippet'], 
-                {"url": src['url'], "title": src['title'], "type": "web"}
-            )
-            
+            self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": "web"})
         return {
             "sources": qualified,
             "logs": state["logs"] + [f"Web discovery found {len(qualified)} sources."],
@@ -93,13 +88,8 @@ class ResearchOrchestrator:
     def academic_node(self, state: ResearchState) -> Dict:
         print("[ORCHESTRATOR] Node: Academic Deep-Dive")
         academic_sources = self.academic_agent.run(state["research_questions"])
-        
         for src in academic_sources:
-            self.vector_store.add_source(
-                src['snippet'], 
-                {"url": src['url'], "title": src['title'], "type": "academic"}
-            )
-            
+            self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": "academic"})
         return {
             "sources": state["sources"] + academic_sources,
             "logs": state["logs"] + [f"Academic deep-dive found {len(academic_sources)} papers."],
@@ -109,19 +99,12 @@ class ResearchOrchestrator:
     def synthesis_node(self, state: ResearchState) -> Dict:
         print("[ORCHESTRATOR] Node: Synthesis")
         report_sections = []
-        
-        # Process top 3 questions for the Phase 1 summary
         for q in state["research_questions"][:3]:
-            # Query vector store for context
             context_results = self.vector_store.query_sources(q['question'], n_results=5)
             fragments = context_results.get('documents', [[]])[0]
-            
             section_content = self.writer_agent.run(q['question'], fragments)
             report_sections.append(f"## {q['question']}\n\n{section_content}")
-            
-        final_report = f"# Research Report: {state['research_topic']}\n\n"
-        final_report += "\n\n".join(report_sections)
-        
+        final_report = f"# Research Report: {state['research_topic']}\n\n" + "\n\n".join(report_sections)
         return {
             "final_report": final_report,
             "logs": state["logs"] + ["Synthesis complete. Final report generated."],
@@ -130,9 +113,7 @@ class ResearchOrchestrator:
         }
 
     def run_full(self, initial_state: ResearchState):
-        """Executes the compiled workflow."""
         return self.workflow.invoke(initial_state)
 
     def plan_only(self, topic: str):
-        """Helper for the GUI to just run the decomposition."""
         return self.decompose_agent.run(topic)

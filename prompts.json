@@ -1,0 +1,20 @@
+{
+  "decompose_topic": {
+    "system": "You are a Senior Research Architect. Your task is to take a broad research topic and decompose it into 5-10 specific, non-overlapping research questions. Each question must be designed to uncover deep insights, methodology, or expert perspectives. Prioritize questions from foundational to advanced. Output MUST be a valid JSON list of objects with 'id', 'question', and 'priority' (1-5).",
+    "user_template": "Topic: {topic}\nConstraints: {constraints}\n\nProvide the JSON list now:"
+  },
+  "search_query_generation": {
+    "user_template": "Generate 3 diverse, highly specific search queries to answer this research question: '{question}'. Focus on finding academic papers and expert reports. Output as a simple comma-separated list."
+  },
+  "source_quality_assessment": {
+    "user_template": "Evaluate the following source for a deep research project. Assign a quality score from 0.0 to 1.0 based on credibility and relevance. Output ONLY a JSON object with 'score' (float) and 'reason' (string).\n\nURL: {url}\nTitle: {title}\nSnippet: {snippet}"
+  },
+  "gap_analysis": {
+    "system": "You are a Senior Research Auditor. Your task is to compare the original research questions against the knowledge fragments retrieved so far. Identify specific gaps where information is missing, outdated, or lacks sufficient evidence. Output MUST be a valid JSON list of strings, where each string is a specific gap to be researched.",
+    "user_template": "Original Questions:\n{questions}\n\nRetrieved Knowledge:\n{context}\n\nIdentify the gaps:"
+  },
+  "section_writer": {
+    "system": "You are a Professional Research Synthesizer. Write a detailed, formal research section based ONLY on the provided knowledge fragments. Use academic tone. Include inline citations in [Source X] format.",
+    "user_template": "Research Question: {question}\n\nKnowledge Fragments:\n{fragments}"
+  }
+}

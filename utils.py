@@ -1,5 +1,6 @@
-# Script Version: 0.1.3 | Phase 0: Foundation
+# Script Version: 0.3.3 | Phase 2: Orchestration
 # Description: General-purpose utility functions for Gauntlet.
+# Implementation: Updated .env setup to include ACTIVE_MODEL_ID placeholder.
 
 import sys
 import os
@@ -25,17 +26,21 @@ def setup_project_files():
         print("[INFO] Creating .env placeholder.")
         with open(".env", "w") as f:
             f.write('OPENROUTER_API_KEY="YOUR_API_KEY_HERE"\n')
+            f.write('ACTIVE_MODEL_ID="YOUR_MODEL_ID_HERE"\n')
+    else:
+        # Append ACTIVE_MODEL_ID if missing
+        with open(".env", "r") as f:
+            content = f.read()
+        if "ACTIVE_MODEL_ID" not in content:
+            with open(".env", "a") as f:
+                f.write('ACTIVE_MODEL_ID="YOUR_MODEL_ID_HERE"\n')
 
-    # models.json
+    # models.json - Template only, user must populate
     if not Path("models.json").exists():
-        print("[INFO] Creating default models.json.")
+        print("[INFO] Creating template models.json.")
         default_models = {
             "models": [
-                {"name": "Gemini 2.5 Flash Lite", "id": "google/gemini-2.5-flash-lite"},
-                {"name": "Gemini 2.5 Flash Lite", "id": "google/gemini-2.5-flash-lite"},
-                {"name": "Gemini 2.5 Flash Lite", "id": "google/gemini-2.5-flash-lite"},
-                {"name": "Gemini 2.5 Flash Lite", "id": "google/gemini-2.5-flash-lite"},
-                {"name": "Gemini 2.5 Flash Lite", "id": "google/gemini-2.5-flash-lite"}
+                {"name": "User Model 1", "id": "YOUR_MODEL_ID_HERE"}
             ]
         }
         with open("models.json", "w") as f:
@@ -47,7 +52,7 @@ def setup_project_files():
         default_settings = {
             "api_timeout": 360,
             "font_size": 15,
-            "model_id": "google/gemini-2.5-flash-lite"
+            "model_id": "YOUR_MODEL_ID_HERE"
         }
         with open("settings.json", "w") as f:
             json.dump(default_settings, f, indent=4)

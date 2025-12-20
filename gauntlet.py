@@ -1,10 +1,11 @@
-# Script Version: 0.1.4 | Phase 1: Agent Foundation
-# Description: Main GUI for Gauntlet with Manual Approval Gate.
-# Implementation: Added two-stage research process (Plan -> Approve -> Execute).
+# Script Version: 0.3.3 | Phase 2: Orchestration
+# Description: Main GUI for Gauntlet with Persistence Support.
+# Implementation: Prioritizes ACTIVE_MODEL_ID from .env for initial setup.
 
 import sys
 import os
 import signal
+import uuid
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
     QTextEdit, QPushButton, QLabel, QSplitter, QMessageBox, QComboBox
@@ -23,16 +24,17 @@ class ResearchWorker(QThread):
     plan_ready = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, topic, model_id, mode="full", state=None):
+    def __init__(self, topic, model_id, thread_id, mode="full", state=None):
         super().__init__()
         self.topic = topic
         self.model_id = model_id
+        self.thread_id = thread_id
         self.mode = mode
         self.state = state
 
     def run(self):
         try:
-            orchestrator = ResearchOrchestrator(self.model_id)
+            orchestrator = ResearchOrchestrator(self.model_id, thread_id=self.thread_id)
             if self.mode == "plan":
                 questions = orchestrator.plan_only(self.topic)
                 self.plan_ready.emit(questions)
@@ -45,7 +47,7 @@ class ResearchWorker(QThread):
 class GauntletUI(QMainWindow):
     def __init__(self, log_signal):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.1.4)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.3.3)")
         self.resize(1200, 800)
         
         self.settings_manager = SettingsManager()
@@ -54,6 +56,7 @@ class GauntletUI(QMainWindow):
         self.log_signal.connect(self._append_log)
         
         self.current_research_state = None
+        self.current_thread_id = str(uuid.uuid4())
         
         self._init_ui()
         self._populate_models()
@@ -63,7 +66,6 @@ class GauntletUI(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # Input Area
         input_row = QHBoxLayout()
         self.topic_input = QTextEdit()
         self.topic_input.setPlaceholderText("Enter research topic...")
@@ -78,7 +80,6 @@ class GauntletUI(QMainWindow):
         input_row.addWidget(self.action_btn)
         layout.addLayout(input_row)
 
-        # Model Selection
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
@@ -87,7 +88,6 @@ class GauntletUI(QMainWindow):
         model_row.addStretch()
         layout.addLayout(model_row)
 
-        # Splitter for Journal and Preview
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.journal = QTextEdit()
         self.journal.setReadOnly(True)
@@ -102,10 +102,23 @@ class GauntletUI(QMainWindow):
 
     def _populate_models(self):
         self.model_combo.clear()
-        for m in self.model_manager.get_all():
-            self.model_combo.addItem(m['name'], m['id'])
+        models = self.model_manager.get_all()
+        
+        # If models.json is empty or contains placeholders, check .env
+        env_model = os.getenv("ACTIVE_MODEL_ID")
+        if env_model and env_model != "YOUR_MODEL_ID_HERE":
+            if not any(m['id'] == env_model for m in models):
+                self.model_combo.addItem(f"Env: {env_model}", env_model)
+        
+        for m in models:
+            if m['id'] != "YOUR_MODEL_ID_HERE":
+                self.model_combo.addItem(m['name'], m['id'])
+        
         idx = self.model_combo.findData(self.settings_manager.get("model_id"))
-        if idx >= 0: self.model_combo.setCurrentIndex(idx)
+        if idx >= 0: 
+            self.model_combo.setCurrentIndex(idx)
+        elif self.model_combo.count() > 0:
+            self.model_combo.setCurrentIndex(0)
 
     def _handle_action(self):
         if self.action_btn.text() == "Generate Plan":
@@ -115,12 +128,17 @@ class GauntletUI(QMainWindow):
 
     def _start_planning(self):
         topic = self.topic_input.toPlainText().strip()
+        model_id = self.model_combo.currentData()
+        
         if not topic: return
+        if not model_id or model_id == "YOUR_MODEL_ID_HERE":
+            QMessageBox.warning(self, "Config Error", "Please select or configure a valid Model ID.")
+            return
 
         self.action_btn.setEnabled(False)
         self.journal.append(f"\n>>> PLANNING PHASE INITIATED: {topic}")
         
-        self.worker = ResearchWorker(topic, self.model_combo.currentData(), mode="plan")
+        self.worker = ResearchWorker(topic, model_id, self.current_thread_id, mode="plan")
         self.worker.plan_ready.connect(self._on_plan_ready)
         self.worker.error.connect(self._on_error)
         self.worker.start()
@@ -130,21 +148,22 @@ class GauntletUI(QMainWindow):
         self.action_btn.setText("Approve & Research")
         self.action_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
         
-        # Initialize state for the next phase
         self.current_research_state = {
             "research_topic": self.topic_input.toPlainText().strip(),
             "user_constraints": {},
+            "model_id": self.model_combo.currentData(),
             "current_phase": "planning",
             "logs": [f"Plan approved with {len(questions)} questions."],
             "research_questions": questions,
             "sources": [],
             "knowledge_fragments": [],
+            "identified_gaps": [],
+            "iteration_count": 0,
+            "max_iterations": 2,
             "final_report": "",
-            "is_complete": False,
-            "model_id": self.model_combo.currentData()
+            "is_complete": False
         }
         
-        # Show plan in preview
         plan_md = "### Proposed Research Plan\n\nPlease review the questions below. Click **Approve & Research** to begin data collection.\n\n"
         for q in questions:
             plan_md += f"- [{q.get('priority', 1)}] {q.get('question')}\n"
@@ -153,9 +172,9 @@ class GauntletUI(QMainWindow):
     def _start_research(self):
         self.action_btn.setEnabled(False)
         self.action_btn.setText("Researching...")
-        self.journal.append(">>> RESEARCH PHASE INITIATED. This may take several minutes.")
+        self.journal.append(f">>> RESEARCH PHASE INITIATED (Thread: {self.current_thread_id})")
         
-        self.worker = ResearchWorker(None, self.model_combo.currentData(), mode="full", state=self.current_research_state)
+        self.worker = ResearchWorker(None, self.model_combo.currentData(), self.current_thread_id, mode="full", state=self.current_research_state)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
@@ -178,8 +197,8 @@ class GauntletUI(QMainWindow):
         self.journal.append(text.strip())
 
 def main():
-    setup_project_files()
     load_dotenv()
+    setup_project_files()
     app = QApplication(sys.argv)
     log_stream = LogStream()
     sys.stdout = log_stream

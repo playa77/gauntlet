@@ -1,6 +1,5 @@
-# Script Version: 0.6.0 | Phase 3: GUI Integration
-# Description: Orchestrator updated to support streaming execution for GUI feedback.
-# Implementation: Added run_stream method to yield node outputs incrementally.
+# Script Version: 0.7.0 | Phase 3: GUI Integration
+# Description: Orchestrator with Gap-based stopping condition.
 
 import os
 import json
@@ -10,6 +9,7 @@ from typing import Dict, List, Literal, Generator
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
 
 from state import ResearchState
 from agents import (
@@ -19,24 +19,19 @@ from agents import (
 )
 from source_manager import SourceManager
 from vector_store import VectorStore
+from settings_manager import SettingsManager, PromptManager
 
 class ResearchOrchestrator:
     def __init__(self, thread_id: str = "default_research"):
-        print(f"[ORCHESTRATOR] Initializing Phase 3 Workflow (Streaming Enabled)...")
+        print(f"[ORCHESTRATOR] Initializing Phase 3 Workflow (Gap Control)...")
+        load_dotenv()
         self.thread_id = thread_id
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         
-        if not self.api_key:
-            print("[ERROR] OPENROUTER_API_KEY not found.")
-            sys.exit(1)
-
-        try:
-            with open("prompts.json", "r") as f: self.prompts = json.load(f)
-            with open("models.json", "r") as f: self.model_config = json.load(f)
-            with open("settings.json", "r") as f: self.settings = json.load(f)
-        except Exception as e:
-            print(f"[FATAL ERROR] Config load failed: {e}")
-            sys.exit(1)
+        self.settings_manager = SettingsManager()
+        self.prompt_manager = PromptManager()
+        self.settings = self.settings_manager.settings
+        self.prompts = self.prompt_manager.prompts
 
         conn = sqlite3.connect("research_state.db", check_same_thread=False)
         self.memory = SqliteSaver(conn)
@@ -44,22 +39,20 @@ class ResearchOrchestrator:
         self.source_manager = SourceManager(delay_ms=500)
         self.vector_store = VectorStore(persist_directory="./research_db")
         
-        # Agents
-        self.decompose_agent = DecomposeTopicAgent(self._get_llm("architect"), self.prompts)
-        self.search_agent = InitialSearchAgent(self._get_llm("researcher"), self.prompts, self.source_manager)
-        self.quality_agent = SourceQualityAgent(self._get_llm("auditor"), self.prompts)
-        self.academic_agent = AcademicSpecialistAgent(self._get_llm("researcher"), self.prompts, self.source_manager)
-        self.gap_agent = GapAnalyzerAgent(self._get_llm("auditor"), self.prompts)
-        self.kg_agent = KnowledgeGraphAgent(self._get_llm("architect"), self.prompts)
-        self.writer_agent = SectionWriterAgent(self._get_llm("writer"), self.prompts)
+        self.decompose_agent = DecomposeTopicAgent(self._get_llm("architect"), self.prompts, self.settings)
+        self.search_agent = InitialSearchAgent(self._get_llm("researcher"), self.prompts, self.source_manager, self.settings)
+        self.quality_agent = SourceQualityAgent(self._get_llm("auditor"), self.prompts, self.settings)
+        self.academic_agent = AcademicSpecialistAgent(self._get_llm("researcher"), self.prompts, self.source_manager, self.settings)
+        self.gap_agent = GapAnalyzerAgent(self._get_llm("auditor"), self.prompts, self.settings)
+        self.kg_agent = KnowledgeGraphAgent(self._get_llm("architect"), self.prompts, self.settings)
+        self.writer_agent = SectionWriterAgent(self._get_llm("writer"), self.prompts, self.settings)
         
         self.workflow = self._build_graph()
 
     def _get_llm(self, role: str) -> ChatOpenAI:
-        role_cfg = self.model_config.get("roles", {}).get(role, {})
-        model_id = role_cfg.get("model_id", self.settings.get("model_id"))
+        role_cfg = self.settings.get("roles", {}).get(role, {})
+        model_id = role_cfg.get("model_id", "google/gemini-2.0-flash-lite-preview-02-05:free")
         temp = role_cfg.get("temperature", 0.2)
-        
         model_kwargs = {"response_format": {"type": "json_object"}}
         
         return ChatOpenAI(
@@ -74,7 +67,6 @@ class ResearchOrchestrator:
 
     def _build_graph(self):
         builder = StateGraph(ResearchState)
-        
         builder.add_node("decompose_node", self.decompose_node)
         builder.add_node("web_search_node", self.web_search_node)
         builder.add_node("academic_node", self.academic_node)
@@ -85,11 +77,8 @@ class ResearchOrchestrator:
         builder.add_edge(START, "decompose_node")
         builder.add_edge("decompose_node", "web_search_node")
         builder.add_edge("decompose_node", "academic_node")
-        
-        # Fan-In to Knowledge Graph
         builder.add_edge("web_search_node", "knowledge_graph_node")
         builder.add_edge("academic_node", "knowledge_graph_node")
-        
         builder.add_edge("knowledge_graph_node", "gap_analysis_node")
         
         builder.add_conditional_edges(
@@ -97,22 +86,33 @@ class ResearchOrchestrator:
             self.should_continue, 
             {"continue": "decompose_node", "finish": "synthesis_node"}
         )
-        
         builder.add_edge("synthesis_node", END)
         return builder.compile(checkpointer=self.memory)
 
     def should_continue(self, state: ResearchState) -> Literal["continue", "finish"]:
         current_iter = state.get("iteration_count", 0)
-        max_iter = state.get("max_iterations", 2)
         
-        if state.get("source_quality_avg", 0) < 0.6 and current_iter < max_iter:
-            print(f"[ORCHESTRATOR] Quality Gate: Avg score {state.get('source_quality_avg')} too low. Retrying...")
-            return "continue"
-            
+        # 1. Hard Limit (Safety Valve)
+        max_iter = self.settings.get("parameters", {}).get("max_iterations", 3)
         if current_iter >= max_iter:
+            print(f"[ORCHESTRATOR] Hit max iterations ({max_iter}). Finishing.")
             return "finish"
-        if not state.get("identified_gaps"):
+
+        # 2. Goal Check (Gaps)
+        max_gaps = self.settings.get("parameters", {}).get("max_gaps_allowed", 0)
+        current_gaps = len(state.get("identified_gaps", []))
+        
+        if current_gaps <= max_gaps:
+            print(f"[ORCHESTRATOR] Gaps ({current_gaps}) <= Allowable ({max_gaps}). Finishing.")
             return "finish"
+
+        # 3. Quality Gate (Optional, keeps researching if quality is low)
+        min_quality = self.settings.get("parameters", {}).get("min_quality_score", 0.6)
+        if state.get("source_quality_avg", 0) < min_quality:
+            print(f"[ORCHESTRATOR] Quality low ({state.get('source_quality_avg')}). Retrying.")
+            return "continue"
+
+        print(f"[ORCHESTRATOR] Gaps ({current_gaps}) > Allowable ({max_gaps}). Continuing.")
         return "continue"
 
     def decompose_node(self, state: ResearchState) -> Dict:
@@ -133,8 +133,9 @@ class ResearchOrchestrator:
         candidates = self.search_agent.run(state["research_questions"])
         quality = self.quality_agent.run(candidates)
         
+        min_score = self.settings.get("parameters", {}).get("min_quality_score", 0.6)
         for src in quality["sources"]:
-            if src.get('score', 0) >= 0.5:
+            if src.get('score', 0) >= (min_score - 0.1):
                 self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": "web"})
         
         return {
@@ -158,7 +159,6 @@ class ResearchOrchestrator:
         print("\n--- PHASE: KNOWLEDGE STRUCTURING ---")
         context_results = self.vector_store.query_sources(state["research_topic"], n_results=15)
         fragments = context_results.get('documents', [[]])[0]
-        
         entities = self.kg_agent.run(fragments)
         return {
             "structured_entities": entities,
@@ -169,7 +169,6 @@ class ResearchOrchestrator:
         print("\n--- PHASE: GAP ANALYSIS ---")
         context_results = self.vector_store.query_sources(state["research_topic"], n_results=10)
         context = context_results.get('documents', [[]])[0]
-        
         gaps = self.gap_agent.run(state["research_questions"], context)
         return {
             "identified_gaps": gaps, 
@@ -187,12 +186,6 @@ class ResearchOrchestrator:
         final_report = f"# {state['research_topic']}\n\n" + "\n\n".join(report_sections)
         return {"final_report": final_report, "is_complete": True}
 
-    def run_full(self, initial_state: ResearchState):
-        """Blocking execution of the full graph."""
-        config = {"configurable": {"thread_id": self.thread_id}}
-        return self.workflow.invoke(initial_state, config=config)
-
     def run_stream(self, initial_state: ResearchState) -> Generator[Dict, None, None]:
-        """Streaming execution yielding node outputs."""
         config = {"configurable": {"thread_id": self.thread_id}}
         return self.workflow.stream(initial_state, config=config)

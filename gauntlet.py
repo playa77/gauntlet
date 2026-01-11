@@ -1,6 +1,6 @@
-# Script Version: 0.5.0 | Phase 3: GUI Integration
-# Description: Full GUI with Tabs, Real-time Streaming, and Visualization.
-# Implementation: Implements QTabWidget, QTableWidget, and streaming ResearchWorker.
+# Script Version: 0.7.0 | Phase 3: GUI Integration
+# Description: Full GUI with Dynamic Font Scaling.
+# Implementation: Added _apply_visual_settings method to update UI fonts on the fly.
 
 import sys
 import os
@@ -19,15 +19,12 @@ from dotenv import load_dotenv
 
 from orchestrator import ResearchOrchestrator
 from utils import setup_project_files, LogStream, crash_handler
-from settings_manager import SettingsManager, ModelManager
+from settings_manager import SettingsManager, ModelManager, PromptManager
+from settings_ui import SettingsDialog
 
 sys.excepthook = crash_handler
 
 class ResearchWorker(QThread):
-    """
-    Worker thread that runs the LangGraph stream and emits signals
-    for UI updates without freezing the main window.
-    """
     log_signal = pyqtSignal(str)
     source_signal = pyqtSignal(list)
     entity_signal = pyqtSignal(list)
@@ -36,10 +33,9 @@ class ResearchWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, topic, model_id, thread_id, mode="full", state=None):
+    def __init__(self, topic, thread_id, mode="full", state=None):
         super().__init__()
         self.topic = topic
-        self.model_id = model_id
         self.thread_id = thread_id
         self.mode = mode
         self.state = state
@@ -60,30 +56,24 @@ class ResearchWorker(QThread):
             elif self.mode == "full":
                 self.log_signal.emit("[START] Beginning research stream...")
                 
-                # Iterate over the graph stream
                 for event in orchestrator.run_stream(self.state):
                     if not self._is_running:
                         self.log_signal.emit("[STOP] Research terminated by user.")
                         break
                     
-                    # Event is a dict {node_name: node_output_dict}
                     for node_name, output in event.items():
                         self.log_signal.emit(f"[GRAPH] Node '{node_name}' completed.")
                         
-                        # Handle Logs
                         if "logs" in output:
                             for log in output["logs"]:
                                 self.log_signal.emit(f"[{node_name.upper()}] {log}")
                         
-                        # Handle Sources
                         if "sources" in output:
                             self.source_signal.emit(output["sources"])
                             
-                        # Handle Knowledge Graph Entities
                         if "structured_entities" in output:
                             self.entity_signal.emit(output["structured_entities"])
                             
-                        # Handle Final Report
                         if "final_report" in output:
                             self.report_signal.emit(output["final_report"])
 
@@ -96,13 +86,13 @@ class ResearchWorker(QThread):
 class GauntletUI(QMainWindow):
     def __init__(self, log_stream):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.5.0)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.7.0)")
         self.resize(1400, 900)
 
         self.settings_manager = SettingsManager()
         self.model_manager = ModelManager()
+        self.prompt_manager = PromptManager()
         
-        # Connect the stdout log stream to our journal
         self.log_stream = log_stream
         self.log_stream.log_signal.connect(self._append_log)
 
@@ -111,14 +101,14 @@ class GauntletUI(QMainWindow):
         self.worker = None
 
         self._init_ui()
-        self._populate_models()
+        self._apply_visual_settings()
 
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # --- Top Bar: Input & Controls ---
+        # --- Top Bar ---
         top_bar = QHBoxLayout()
         
         self.topic_input = QTextEdit()
@@ -136,31 +126,27 @@ class GauntletUI(QMainWindow):
         self.stop_btn.setStyleSheet("background-color: #8B0000; color: white; font-weight: bold;")
         self.stop_btn.clicked.connect(self._stop_research)
         self.stop_btn.setEnabled(False)
+        
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.setFixedWidth(100)
+        self.settings_btn.setFixedHeight(60)
+        self.settings_btn.clicked.connect(self._open_settings)
 
         top_bar.addWidget(self.topic_input)
         top_bar.addWidget(self.action_btn)
         top_bar.addWidget(self.stop_btn)
+        top_bar.addWidget(self.settings_btn)
         main_layout.addLayout(top_bar)
 
-        # --- Model Selection ---
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Model:"))
-        self.model_combo = QComboBox()
-        self.model_combo.setFixedWidth(400)
-        model_row.addWidget(self.model_combo)
-        model_row.addStretch()
-        main_layout.addLayout(model_row)
-
-        # --- Main Content: Tabs ---
+        # --- Tabs ---
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
-        # Tab 1: Live Journal
+        # Tab 1: Journal
         self.journal_tab = QWidget()
         journal_layout = QVBoxLayout(self.journal_tab)
         self.journal = QTextEdit()
         self.journal.setReadOnly(True)
-        self.journal.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', monospace;")
         journal_layout.addWidget(self.journal)
         self.tabs.addTab(self.journal_tab, "Live Journal")
 
@@ -175,7 +161,7 @@ class GauntletUI(QMainWindow):
         sources_layout.addWidget(self.sources_table)
         self.tabs.addTab(self.sources_tab, "Sources")
 
-        # Tab 3: Knowledge Graph
+        # Tab 3: Knowledge
         self.kg_tab = QWidget()
         kg_layout = QVBoxLayout(self.kg_tab)
         self.kg_tree = QTreeWidget()
@@ -185,9 +171,17 @@ class GauntletUI(QMainWindow):
         kg_layout.addWidget(self.kg_tree)
         self.tabs.addTab(self.kg_tab, "Knowledge")
 
-        # Tab 4: Final Report
+        # Tab 4: Report
         self.report_tab = QWidget()
         report_layout = QVBoxLayout(self.report_tab)
+        
+        report_toolbar = QHBoxLayout()
+        copy_btn = QPushButton("Copy Markdown")
+        copy_btn.clicked.connect(self._copy_report)
+        report_toolbar.addStretch()
+        report_toolbar.addWidget(copy_btn)
+        report_layout.addLayout(report_toolbar)
+        
         self.report_view = QTextEdit()
         self.report_view.setReadOnly(True)
         report_layout.addWidget(self.report_view)
@@ -198,23 +192,44 @@ class GauntletUI(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
-    def _populate_models(self):
-        self.model_combo.clear()
-        models = self.model_manager.get_all()
-        env_model = os.getenv("ACTIVE_MODEL_ID")
+    def _apply_visual_settings(self):
+        """Applies font size and styles globally and to specific widgets."""
+        size = self.settings_manager.get("font_size", 14)
         
-        # Add env model if not in list
-        if env_model and env_model != "YOUR_MODEL_ID_HERE":
-            if not any(m['id'] == env_model for m in models):
-                self.model_combo.addItem(f"Env: {env_model}", env_model)
+        # 1. Global Application Font (Labels, Buttons, Menus)
+        # We use a standard UI font for the interface
+        app_font = QFont("Segoe UI", size)
+        QApplication.instance().setFont(app_font)
+        
+        # 2. Journal Style (Monospace, Dark Theme)
+        journal_css = f"""
+            background-color: #1e1e1e; 
+            color: #d4d4d4; 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            font-size: {size}pt;
+        """
+        self.journal.setStyleSheet(journal_css)
+        
+        # 3. Report Style (Standard Text)
+        report_css = f"""
+            font-family: 'Segoe UI', sans-serif;
+            font-size: {size}pt;
+            line-height: 1.6;
+        """
+        self.report_view.setStyleSheet(report_css)
+        
+        # 4. Input Field
+        self.topic_input.setStyleSheet(f"font-size: {size}pt;")
 
-        for m in models:
-            if m['id'] != "YOUR_MODEL_ID_HERE":
-                self.model_combo.addItem(m['name'], m['id'])
-
-        # Set selection
-        idx = self.model_combo.findData(self.settings_manager.get("model_id"))
-        if idx >= 0: self.model_combo.setCurrentIndex(idx)
+    def _open_settings(self):
+        dlg = SettingsDialog(self.settings_manager, self.model_manager, self.prompt_manager, self)
+        if dlg.exec():
+            # Reload settings
+            self.settings_manager.load()
+            self.prompt_manager.load()
+            # Apply visual changes immediately
+            self._apply_visual_settings()
+            self.status_bar.showMessage("Settings updated.")
 
     def _handle_action(self):
         if self.action_btn.text() == "Generate Plan":
@@ -231,7 +246,7 @@ class GauntletUI(QMainWindow):
         self.journal.clear()
         self.journal.append(f"--- STARTING PLAN FOR: {topic} ---")
 
-        self.worker = ResearchWorker(topic, self.model_combo.currentData(), self.current_thread_id, mode="plan")
+        self.worker = ResearchWorker(topic, self.current_thread_id, mode="plan")
         self.worker.plan_ready.connect(self._on_plan_ready)
         self.worker.log_signal.connect(self._append_log)
         self.worker.error.connect(self._on_error)
@@ -243,11 +258,9 @@ class GauntletUI(QMainWindow):
         self.action_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
         self.status_bar.showMessage("Plan Ready. Review in Report tab.")
 
-        # Initialize State
         self.current_research_state = {
             "research_topic": self.topic_input.toPlainText().strip(),
             "user_constraints": {},
-            "model_id": self.model_combo.currentData(),
             "current_phase": "exploration",
             "logs": [],
             "research_questions": questions,
@@ -256,33 +269,29 @@ class GauntletUI(QMainWindow):
             "structured_entities": [],
             "identified_gaps": [],
             "iteration_count": 0,
-            "max_iterations": 2,
             "final_report": "",
             "is_complete": False
         }
 
-        # Show Plan in Report Tab
         plan_md = "### Proposed Research Plan\n\n"
         for q in questions:
             plan_md += f"- **[P{q.get('priority', 1)}]** {q.get('question')}\n"
         self.report_view.setMarkdown(plan_md)
-        self.tabs.setCurrentIndex(3) # Switch to Report tab
+        self.tabs.setCurrentIndex(3)
 
     def _start_research(self):
         self._set_busy(True)
         self.action_btn.setText("Researching...")
         self.status_bar.showMessage("Research in progress...")
-        self.tabs.setCurrentIndex(0) # Switch to Journal
+        self.tabs.setCurrentIndex(0)
 
         self.worker = ResearchWorker(
             None, 
-            self.model_combo.currentData(), 
             self.current_thread_id, 
             mode="full", 
             state=self.current_research_state
         )
         
-        # Connect Signals
         self.worker.log_signal.connect(self._append_log)
         self.worker.source_signal.connect(self._update_sources)
         self.worker.entity_signal.connect(self._update_entities)
@@ -304,7 +313,7 @@ class GauntletUI(QMainWindow):
         self.action_btn.setText("Generate Plan")
         self.action_btn.setStyleSheet("")
         self.status_bar.showMessage("Research Complete")
-        self.tabs.setCurrentIndex(3) # Show final report
+        self.tabs.setCurrentIndex(3)
 
     def _on_error(self, err):
         self._set_busy(False)
@@ -316,22 +325,25 @@ class GauntletUI(QMainWindow):
         self.topic_input.setEnabled(not busy)
         self.action_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
+        self.settings_btn.setEnabled(not busy)
         if not busy:
             self.stop_btn.setStyleSheet("background-color: #8B0000; color: white; font-weight: bold;")
+
+    def _copy_report(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.report_view.toMarkdown())
+        self.status_bar.showMessage("Report copied to clipboard!", 3000)
 
     @pyqtSlot(str)
     def _append_log(self, text):
         self.journal.append(text.strip())
-        # Auto-scroll
         sb = self.journal.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     @pyqtSlot(list)
     def _update_sources(self, sources):
-        # We append new sources to the table
         current_rows = self.sources_table.rowCount()
         for src in sources:
-            # Check for duplicates by URL
             duplicate = False
             for r in range(current_rows):
                 if self.sources_table.item(r, 3).text() == src.get('url'):
@@ -373,12 +385,8 @@ def main():
     load_dotenv()
     setup_project_files()
     app = QApplication(sys.argv)
-    
-    # Log stream for capturing stdout/stderr if needed, 
-    # though we primarily use signals now.
     log_stream = LogStream()
     sys.stdout = log_stream
-    
     window = GauntletUI(log_stream)
     signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
     window.show()

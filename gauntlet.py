@@ -1,6 +1,5 @@
-# Script Version: 0.7.0 | Phase 3: GUI Integration
-# Description: Full GUI with Dynamic Font Scaling.
-# Implementation: Added _apply_visual_settings method to update UI fonts on the fly.
+# Script Version: 0.9.0 | Phase 4: Advanced Features
+# Description: Added PlanEditorWidget, Refine logic, and Recursion handling.
 
 import sys
 import os
@@ -11,11 +10,13 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
     QTextEdit, QPushButton, QLabel, QSplitter, QMessageBox, QComboBox, 
     QStatusBar, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QTreeWidget, QTreeWidgetItem
+    QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem, QMenu,
+    QInputDialog, QDialog
 )
 from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QAction
 from dotenv import load_dotenv
+from langgraph.errors import GraphRecursionError
 
 from orchestrator import ResearchOrchestrator
 from utils import setup_project_files, LogStream, crash_handler
@@ -24,59 +25,157 @@ from settings_ui import SettingsDialog
 
 sys.excepthook = crash_handler
 
+class PlanEditorWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
+        self.layout.addWidget(self.list_widget)
+        
+        btn_layout = QHBoxLayout()
+        self.add_btn = QPushButton("Add New Point")
+        self.add_btn.clicked.connect(self._add_point)
+        self.approve_btn = QPushButton("Approve Plan")
+        self.approve_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
+        
+        btn_layout.addWidget(self.add_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.approve_btn)
+        self.layout.addLayout(btn_layout)
+        
+        self.refine_callback = None
+
+    def load_questions(self, questions):
+        self.list_widget.clear()
+        for q in questions:
+            self._add_item(q)
+
+    def _add_item(self, q_data):
+        item = QListWidgetItem(f"[P{q_data.get('priority', 1)}] {q_data.get('question')}")
+        item.setData(Qt.ItemDataRole.UserRole, q_data)
+        self.list_widget.addItem(item)
+
+    def _show_context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        if not item: return
+        
+        menu = QMenu()
+        refine_action = QAction("Refine", self)
+        delete_action = QAction("Delete", self)
+        
+        refine_action.triggered.connect(lambda: self._refine_item(item))
+        delete_action.triggered.connect(lambda: self._delete_item(item))
+        
+        menu.addAction(refine_action)
+        menu.addAction(delete_action)
+        menu.exec(self.list_widget.mapToGlobal(pos))
+
+    def _delete_item(self, item):
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            "Are you sure you want to remove this research point?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            row = self.list_widget.row(item)
+            self.list_widget.takeItem(row)
+
+    def _refine_item(self, item):
+        if self.refine_callback:
+            q_data = item.data(Qt.ItemDataRole.UserRole)
+            self.refine_callback(q_data['question'], item)
+
+    def _add_point(self):
+        text, ok = QInputDialog.getText(self, "New Research Point", "Enter question:")
+        if ok and text:
+            q_data = {"id": self.list_widget.count() + 1, "question": text, "priority": 1}
+            self._add_item(q_data)
+
+    def get_questions(self):
+        questions = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            questions.append(item.data(Qt.ItemDataRole.UserRole))
+        return questions
+
 class ResearchWorker(QThread):
     log_signal = pyqtSignal(str)
     source_signal = pyqtSignal(list)
     entity_signal = pyqtSignal(list)
     report_signal = pyqtSignal(str)
     plan_ready = pyqtSignal(list)
+    refinement_ready = pyqtSignal(list, object) # options, item_ref
+    recursion_error = pyqtSignal()
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, topic, thread_id, mode="full", state=None):
+    def __init__(self, topic, thread_id, mode="full", state=None, extra_data=None):
         super().__init__()
         self.topic = topic
         self.thread_id = thread_id
         self.mode = mode
         self.state = state
+        self.extra_data = extra_data
         self._is_running = True
+        self.orchestrator = None
 
     def stop(self):
         self._is_running = False
 
     def run(self):
         try:
-            orchestrator = ResearchOrchestrator(thread_id=self.thread_id)
+            self.orchestrator = ResearchOrchestrator(thread_id=self.thread_id)
             
             if self.mode == "plan":
                 self.log_signal.emit("[PLANNING] Decomposing topic...")
-                questions = orchestrator.decompose_agent.run(self.topic)
+                questions = self.orchestrator.decompose_agent.run(self.topic)
                 self.plan_ready.emit(questions)
             
+            elif self.mode == "refine":
+                question = self.extra_data.get("question")
+                item_ref = self.extra_data.get("item_ref")
+                options = self.orchestrator.refine_question(question)
+                self.refinement_ready.emit(options, item_ref)
+
             elif self.mode == "full":
                 self.log_signal.emit("[START] Beginning research stream...")
+                recursion_limit = self.extra_data.get("recursion_limit", 25)
                 
-                for event in orchestrator.run_stream(self.state):
-                    if not self._is_running:
-                        self.log_signal.emit("[STOP] Research terminated by user.")
-                        break
+                try:
+                    for event in self.orchestrator.run_stream(self.state, recursion_limit=recursion_limit):
+                        if not self._is_running:
+                            self.log_signal.emit("[STOP] Research terminated by user.")
+                            break
+                        
+                        for node_name, output in event.items():
+                            self.log_signal.emit(f"[GRAPH] Node '{node_name}' completed.")
+                            
+                            if "logs" in output:
+                                for log in output["logs"]:
+                                    self.log_signal.emit(f"[{node_name.upper()}] {log}")
+                            
+                            if "sources" in output:
+                                self.source_signal.emit(output["sources"])
+                                
+                            if "structured_entities" in output:
+                                self.entity_signal.emit(output["structured_entities"])
+                                
+                            if "final_report" in output:
+                                self.report_signal.emit(output["final_report"])
                     
-                    for node_name, output in event.items():
-                        self.log_signal.emit(f"[GRAPH] Node '{node_name}' completed.")
-                        
-                        if "logs" in output:
-                            for log in output["logs"]:
-                                self.log_signal.emit(f"[{node_name.upper()}] {log}")
-                        
-                        if "sources" in output:
-                            self.source_signal.emit(output["sources"])
-                            
-                        if "structured_entities" in output:
-                            self.entity_signal.emit(output["structured_entities"])
-                            
-                        if "final_report" in output:
-                            self.report_signal.emit(output["final_report"])
+                    self.finished.emit()
 
+                except GraphRecursionError:
+                    self.log_signal.emit("[ERROR] Recursion limit reached!")
+                    self.recursion_error.emit()
+                
+            elif self.mode == "generate_now":
+                self.log_signal.emit("[SYSTEM] Forcing report generation...")
+                report = self.orchestrator.generate_report_now(self.state)
+                self.report_signal.emit(report)
                 self.finished.emit()
                 
         except Exception as e:
@@ -86,7 +185,7 @@ class ResearchWorker(QThread):
 class GauntletUI(QMainWindow):
     def __init__(self, log_stream):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.7.0)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.9.0)")
         self.resize(1400, 900)
 
         self.settings_manager = SettingsManager()
@@ -99,6 +198,7 @@ class GauntletUI(QMainWindow):
         self.current_research_state = None
         self.current_thread_id = str(uuid.uuid4())
         self.worker = None
+        self.recursion_limit = self.settings_manager.get_param("max_iterations") or 25
 
         self._init_ui()
         self._apply_visual_settings()
@@ -171,20 +271,32 @@ class GauntletUI(QMainWindow):
         kg_layout.addWidget(self.kg_tree)
         self.tabs.addTab(self.kg_tab, "Knowledge")
 
-        # Tab 4: Report
+        # Tab 4: Report / Plan Editor
         self.report_tab = QWidget()
-        report_layout = QVBoxLayout(self.report_tab)
+        self.report_layout = QVBoxLayout(self.report_tab)
         
+        # Plan Editor (Hidden initially)
+        self.plan_editor = PlanEditorWidget()
+        self.plan_editor.refine_callback = self._start_refinement
+        self.plan_editor.approve_btn.clicked.connect(self._approve_plan)
+        self.plan_editor.hide()
+        self.report_layout.addWidget(self.plan_editor)
+
+        # Report View
+        self.report_view_container = QWidget()
+        rv_layout = QVBoxLayout(self.report_view_container)
         report_toolbar = QHBoxLayout()
         copy_btn = QPushButton("Copy Markdown")
         copy_btn.clicked.connect(self._copy_report)
         report_toolbar.addStretch()
         report_toolbar.addWidget(copy_btn)
-        report_layout.addLayout(report_toolbar)
+        rv_layout.addLayout(report_toolbar)
         
         self.report_view = QTextEdit()
         self.report_view.setReadOnly(True)
-        report_layout.addWidget(self.report_view)
+        rv_layout.addWidget(self.report_view)
+        
+        self.report_layout.addWidget(self.report_view_container)
         self.tabs.addTab(self.report_tab, "Report")
 
         # --- Status Bar ---
@@ -193,15 +305,10 @@ class GauntletUI(QMainWindow):
         self.status_bar.showMessage("Ready")
 
     def _apply_visual_settings(self):
-        """Applies font size and styles globally and to specific widgets."""
         size = self.settings_manager.get("font_size", 14)
-        
-        # 1. Global Application Font (Labels, Buttons, Menus)
-        # We use a standard UI font for the interface
         app_font = QFont("Segoe UI", size)
         QApplication.instance().setFont(app_font)
         
-        # 2. Journal Style (Monospace, Dark Theme)
         journal_css = f"""
             background-color: #1e1e1e; 
             color: #d4d4d4; 
@@ -210,32 +317,28 @@ class GauntletUI(QMainWindow):
         """
         self.journal.setStyleSheet(journal_css)
         
-        # 3. Report Style (Standard Text)
         report_css = f"""
             font-family: 'Segoe UI', sans-serif;
             font-size: {size}pt;
             line-height: 1.6;
         """
         self.report_view.setStyleSheet(report_css)
-        
-        # 4. Input Field
         self.topic_input.setStyleSheet(f"font-size: {size}pt;")
 
     def _open_settings(self):
         dlg = SettingsDialog(self.settings_manager, self.model_manager, self.prompt_manager, self)
         if dlg.exec():
-            # Reload settings
             self.settings_manager.load()
             self.prompt_manager.load()
-            # Apply visual changes immediately
             self._apply_visual_settings()
+            self.recursion_limit = self.settings_manager.get_param("max_iterations")
             self.status_bar.showMessage("Settings updated.")
 
     def _handle_action(self):
         if self.action_btn.text() == "Generate Plan":
             self._start_planning()
         elif self.action_btn.text() == "Approve & Research":
-            self._start_research()
+            self._approve_plan()
 
     def _start_planning(self):
         topic = self.topic_input.toPlainText().strip()
@@ -254,10 +357,42 @@ class GauntletUI(QMainWindow):
 
     def _on_plan_ready(self, questions):
         self._set_busy(False)
-        self.action_btn.setText("Approve & Research")
-        self.action_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
         self.status_bar.showMessage("Plan Ready. Review in Report tab.")
+        
+        # Switch to Plan Editor View
+        self.report_view_container.hide()
+        self.plan_editor.load_questions(questions)
+        self.plan_editor.show()
+        self.tabs.setCurrentIndex(3)
+        self.action_btn.setEnabled(False) # User must use Approve button in editor
 
+    def _start_refinement(self, question, item_ref):
+        self.status_bar.showMessage("Refining question...")
+        self.worker = ResearchWorker(None, self.current_thread_id, mode="refine", extra_data={"question": question, "item_ref": item_ref})
+        self.worker.refinement_ready.connect(self._on_refinement_ready)
+        self.worker.start()
+
+    def _on_refinement_ready(self, options, item_ref):
+        self.status_bar.showMessage("Refinement options ready.")
+        if not options:
+            QMessageBox.warning(self, "Refine", "No suggestions generated.")
+            return
+            
+        opt, ok = QInputDialog.getItem(self, "Refine Question", "Select a variation:", options, 0, False)
+        if ok and opt:
+            data = item_ref.data(Qt.ItemDataRole.UserRole)
+            data['question'] = opt
+            item_ref.setText(f"[P{data.get('priority', 1)}] {opt}")
+            item_ref.setData(Qt.ItemDataRole.UserRole, data)
+
+    def _approve_plan(self):
+        questions = self.plan_editor.get_questions()
+        if not questions: return
+
+        self.plan_editor.hide()
+        self.report_view_container.show()
+        self.report_view.clear()
+        
         self.current_research_state = {
             "research_topic": self.topic_input.toPlainText().strip(),
             "user_constraints": {},
@@ -272,12 +407,8 @@ class GauntletUI(QMainWindow):
             "final_report": "",
             "is_complete": False
         }
-
-        plan_md = "### Proposed Research Plan\n\n"
-        for q in questions:
-            plan_md += f"- **[P{q.get('priority', 1)}]** {q.get('question')}\n"
-        self.report_view.setMarkdown(plan_md)
-        self.tabs.setCurrentIndex(3)
+        
+        self._start_research()
 
     def _start_research(self):
         self._set_busy(True)
@@ -289,7 +420,8 @@ class GauntletUI(QMainWindow):
             None, 
             self.current_thread_id, 
             mode="full", 
-            state=self.current_research_state
+            state=self.current_research_state,
+            extra_data={"recursion_limit": self.recursion_limit}
         )
         
         self.worker.log_signal.connect(self._append_log)
@@ -298,7 +430,42 @@ class GauntletUI(QMainWindow):
         self.worker.report_signal.connect(self._update_report)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
+        self.worker.recursion_error.connect(self._on_recursion_error)
         
+        self.worker.start()
+
+    def _on_recursion_error(self):
+        self._set_busy(False)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Recursion Limit Reached")
+        msg.setText(f"The research hit the limit of {self.recursion_limit} steps without finishing.")
+        msg.setInformativeText("What would you like to do?")
+        
+        btn_continue = msg.addButton("Continue (+10 steps)", QMessageBox.ButtonRole.ActionRole)
+        btn_generate = msg.addButton("Generate Report Now", QMessageBox.ButtonRole.ActionRole)
+        btn_abort = msg.addButton("Abort", QMessageBox.ButtonRole.RejectRole)
+        
+        msg.exec()
+        
+        if msg.clickedButton() == btn_continue:
+            self.recursion_limit += 10
+            self.journal.append(f"[SYSTEM] Increasing recursion limit to {self.recursion_limit}...")
+            self._start_research() # Resume with new limit
+        elif msg.clickedButton() == btn_generate:
+            self._generate_report_now()
+        else:
+            self._on_finished()
+
+    def _generate_report_now(self):
+        self.journal.append("[SYSTEM] Forcing report generation...")
+        self.worker = ResearchWorker(
+            None, 
+            self.current_thread_id, 
+            mode="generate_now", 
+            state=self.current_research_state
+        )
+        self.worker.report_signal.connect(self._update_report)
+        self.worker.finished.connect(self._on_finished)
         self.worker.start()
 
     def _stop_research(self):
@@ -311,7 +478,7 @@ class GauntletUI(QMainWindow):
     def _on_finished(self):
         self._set_busy(False)
         self.action_btn.setText("Generate Plan")
-        self.action_btn.setStyleSheet("")
+        self.action_btn.setEnabled(True)
         self.status_bar.showMessage("Research Complete")
         self.tabs.setCurrentIndex(3)
 
@@ -374,6 +541,9 @@ class GauntletUI(QMainWindow):
 
     @pyqtSlot(str)
     def _update_report(self, markdown):
+        # Append logic if streaming, but here we replace for simplicity or append if partial
+        # Since synthesis node sends full report at end, setMarkdown is fine.
+        # If we wanted progressive, we'd need to change synthesis node to yield chunks.
         self.report_view.setMarkdown(markdown)
 
     def _open_url(self, row, col):

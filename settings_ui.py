@@ -1,5 +1,5 @@
-# Script Version: 0.3.0 | Phase 3: GUI Integration
-# Description: Settings Dialog updated with Font Size control.
+# Script Version: 0.4.0 | Phase 4: Advanced Features
+# Description: Added UI for split search depth parameters.
 
 import os
 from PyQt6.QtWidgets import (
@@ -121,7 +121,8 @@ class SettingsDialog(QDialog):
         params = [
             ("max_iterations", "Max Iterations (Hard Limit)", int),
             ("max_gaps_allowed", "Max Allowable Gaps (Goal)", int),
-            ("search_depth", "Search Depth (Recursion Level)", int),
+            ("initial_search_depth", "Initial Search Depth (Iter 0)", int),
+            ("refinement_search_depth", "Refinement Search Depth (Iter > 0)", int),
             ("search_queries_per_question", "Queries per Question", int),
             ("search_results_per_query", "Results per Query", int),
             ("academic_papers_per_query", "Academic Papers per Query", int),
@@ -132,8 +133,8 @@ class SettingsDialog(QDialog):
             if dtype == int:
                 widget = QSpinBox()
                 widget.setRange(0, 50)
-                if key == "search_depth":
-                    widget.setRange(1, 3)
+                if "depth" in key:
+                    widget.setRange(1, 4)
             else:
                 widget = QDoubleSpinBox()
                 widget.setRange(0.0, 1.0)

@@ -1,5 +1,5 @@
-# Script Version: 0.7.0 | Phase 3: GUI Integration
-# Description: Orchestrator with Gap-based stopping condition.
+# Script Version: 0.8.0 | Phase 4: Advanced Features
+# Description: Orchestrator with dynamic depth and manual refinement support.
 
 import os
 import json
@@ -15,7 +15,7 @@ from state import ResearchState
 from agents import (
     DecomposeTopicAgent, InitialSearchAgent, SourceQualityAgent, 
     AcademicSpecialistAgent, SectionWriterAgent, GapAnalyzerAgent,
-    KnowledgeGraphAgent
+    KnowledgeGraphAgent, RefineQuestionAgent
 )
 from source_manager import SourceManager
 from vector_store import VectorStore
@@ -23,7 +23,7 @@ from settings_manager import SettingsManager, PromptManager
 
 class ResearchOrchestrator:
     def __init__(self, thread_id: str = "default_research"):
-        print(f"[ORCHESTRATOR] Initializing Phase 3 Workflow (Gap Control)...")
+        print(f"[ORCHESTRATOR] Initializing Phase 4 Workflow...")
         load_dotenv()
         self.thread_id = thread_id
         self.api_key = os.getenv("OPENROUTER_API_KEY")
@@ -40,6 +40,7 @@ class ResearchOrchestrator:
         self.vector_store = VectorStore(persist_directory="./research_db")
         
         self.decompose_agent = DecomposeTopicAgent(self._get_llm("architect"), self.prompts, self.settings)
+        self.refine_agent = RefineQuestionAgent(self._get_llm("architect"), self.prompts, self.settings)
         self.search_agent = InitialSearchAgent(self._get_llm("researcher"), self.prompts, self.source_manager, self.settings)
         self.quality_agent = SourceQualityAgent(self._get_llm("auditor"), self.prompts, self.settings)
         self.academic_agent = AcademicSpecialistAgent(self._get_llm("researcher"), self.prompts, self.source_manager, self.settings)
@@ -93,7 +94,7 @@ class ResearchOrchestrator:
         current_iter = state.get("iteration_count", 0)
         
         # 1. Hard Limit (Safety Valve)
-        max_iter = self.settings.get("parameters", {}).get("max_iterations", 3)
+        max_iter = self.settings.get("parameters", {}).get("max_iterations", 25)
         if current_iter >= max_iter:
             print(f"[ORCHESTRATOR] Hit max iterations ({max_iter}). Finishing.")
             return "finish"
@@ -106,22 +107,23 @@ class ResearchOrchestrator:
             print(f"[ORCHESTRATOR] Gaps ({current_gaps}) <= Allowable ({max_gaps}). Finishing.")
             return "finish"
 
-        # 3. Quality Gate (Optional, keeps researching if quality is low)
-        min_quality = self.settings.get("parameters", {}).get("min_quality_score", 0.6)
-        if state.get("source_quality_avg", 0) < min_quality:
-            print(f"[ORCHESTRATOR] Quality low ({state.get('source_quality_avg')}). Retrying.")
-            return "continue"
-
         print(f"[ORCHESTRATOR] Gaps ({current_gaps}) > Allowable ({max_gaps}). Continuing.")
         return "continue"
 
     def decompose_node(self, state: ResearchState) -> Dict:
         print(f"\n--- PHASE: PLANNING (Iteration {state.get('iteration_count', 0)}) ---")
         topic = state["research_topic"]
-        if state.get("identified_gaps"):
+        
+        # If this is a gap-filling iteration, focus on gaps
+        if state.get("identified_gaps") and state.get("iteration_count", 0) > 0:
             topic = f"{topic} (Focusing on gaps: {', '.join(state['identified_gaps'])})"
+            questions = self.decompose_agent.run(topic, state.get("user_constraints", {}))
+        elif state.get("iteration_count", 0) == 0 and state.get("research_questions"):
+            # If initial iteration and questions already exist (from manual plan approval)
+            questions = state["research_questions"]
+        else:
+            questions = self.decompose_agent.run(topic, state.get("user_constraints", {}))
             
-        questions = self.decompose_agent.run(topic, state.get("user_constraints", {}))
         return {
             "research_questions": questions, 
             "logs": [f"Iteration {state.get('iteration_count', 0)}: Generated {len(questions)} questions."],
@@ -130,7 +132,10 @@ class ResearchOrchestrator:
 
     def web_search_node(self, state: ResearchState) -> Dict:
         print("\n--- BRANCH: WEB SEARCH ---")
-        candidates = self.search_agent.run(state["research_questions"])
+        iter_count = state.get("iteration_count", 0)
+        depth = self.settings.get("parameters", {}).get("initial_search_depth", 2) if iter_count == 0 else self.settings.get("parameters", {}).get("refinement_search_depth", 1)
+        
+        candidates = self.search_agent.run(state["research_questions"], depth=depth)
         quality = self.quality_agent.run(candidates)
         
         min_score = self.settings.get("parameters", {}).get("min_quality_score", 0.6)
@@ -141,18 +146,21 @@ class ResearchOrchestrator:
         return {
             "sources": quality["sources"], 
             "source_quality_avg": quality["average_score"], 
-            "logs": [f"Web branch found {len(quality['sources'])} sources."]
+            "logs": [f"Web branch found {len(quality['sources'])} sources (Depth {depth})."]
         }
 
     def academic_node(self, state: ResearchState) -> Dict:
         print("\n--- BRANCH: ACADEMIC SEARCH ---")
-        academic = self.academic_agent.run(state["research_questions"])
+        iter_count = state.get("iteration_count", 0)
+        depth = self.settings.get("parameters", {}).get("initial_search_depth", 2) if iter_count == 0 else self.settings.get("parameters", {}).get("refinement_search_depth", 1)
+
+        academic = self.academic_agent.run(state["research_questions"], depth=depth)
         for src in academic:
             self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": "academic"})
         
         return {
             "sources": academic, 
-            "logs": [f"Academic branch found {len(academic)} papers."]
+            "logs": [f"Academic branch found {len(academic)} papers (Depth {depth})."]
         }
 
     def knowledge_graph_node(self, state: ResearchState) -> Dict:
@@ -181,11 +189,21 @@ class ResearchOrchestrator:
         report_sections = []
         for q in state["research_questions"][:5]:
             fragments = self.vector_store.query_sources(q['question'], n_results=8).get('documents', [[]])[0]
-            report_sections.append(f"## {q['question']}\n\n{self.writer_agent.run(q['question'], fragments)}")
+            section_text = self.writer_agent.run(q['question'], fragments)
+            report_sections.append(f"## {q['question']}\n\n{section_text}")
         
         final_report = f"# {state['research_topic']}\n\n" + "\n\n".join(report_sections)
         return {"final_report": final_report, "is_complete": True}
 
-    def run_stream(self, initial_state: ResearchState) -> Generator[Dict, None, None]:
-        config = {"configurable": {"thread_id": self.thread_id}}
+    def run_stream(self, initial_state: ResearchState, recursion_limit: int = 25) -> Generator[Dict, None, None]:
+        config = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": recursion_limit}
         return self.workflow.stream(initial_state, config=config)
+
+    def refine_question(self, question: str) -> List[str]:
+        """Directly calls the RefineQuestionAgent."""
+        return self.refine_agent.run(question)
+
+    def generate_report_now(self, state: ResearchState) -> str:
+        """Manually triggers synthesis on the provided state."""
+        result = self.synthesis_node(state)
+        return result["final_report"]

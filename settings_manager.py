@@ -1,5 +1,5 @@
-# Script Version: 0.2.1 | Phase 3: GUI Integration
-# Description: Added max_gaps_allowed and search_depth parameters.
+# Script Version: 0.4.1 | Phase 4: Advanced Features
+# Description: Fixed missing ModelManager and PromptManager classes.
 
 import json
 import sys
@@ -13,21 +13,22 @@ class SettingsManager:
     """
     DEFAULT_SETTINGS = {
         "api_timeout": 360,
-        "font_size": 14,
+        "font_size": 16,
         "parameters": {
-            "max_iterations": 3,              # Hard limit (Safety valve)
+            "max_iterations": 25,             # Hard limit (Safety valve)
             "max_gaps_allowed": 0,            # Goal (Stop if gaps <= this)
-            "search_depth": 1,                # Recursive search depth (1-3)
+            "initial_search_depth": 2,        # Depth for Iteration 0
+            "refinement_search_depth": 1,     # Depth for Iteration > 0
             "search_queries_per_question": 3,
             "search_results_per_query": 5,
             "min_quality_score": 0.6,
             "academic_papers_per_query": 5
         },
         "roles": {
-            "architect": {"model_id": "google/gemini-2.0-flash-lite-preview-02-05:free", "temperature": 0.3},
-            "researcher": {"model_id": "google/gemini-2.0-flash-lite-preview-02-05:free", "temperature": 0.2},
-            "auditor": {"model_id": "google/gemini-2.0-flash-lite-preview-02-05:free", "temperature": 0.1},
-            "writer": {"model_id": "google/gemini-2.0-flash-lite-preview-02-05:free", "temperature": 0.4}
+            "architect": {"model_id": "google/gemini-2.5-flash-lite", "temperature": 0.3},
+            "researcher": {"model_id": "google/gemini-2.5-flash-lite", "temperature": 0.2},
+            "auditor": {"model_id": "google/gemini-2.5-flash-lite", "temperature": 0.1},
+            "writer": {"model_id": "google/gemini-2.5-flash-lite", "temperature": 0.4}
         }
     }
 

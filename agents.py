@@ -1,5 +1,5 @@
-# Script Version: 0.8.0 | Phase 3: GUI Integration
-# Description: Agents updated with recursive search depth logic.
+# Script Version: 0.9.0 | Phase 4: Advanced Features
+# Description: Added RefineQuestionAgent and dynamic depth support.
 
 import json
 import re
@@ -41,12 +41,30 @@ class DecomposeTopicAgent(BaseAgent):
             print(f"[ERROR] [Decompose] Failed: {str(e)}")
             return [{"id": 1, "question": f"General overview of {topic}", "priority": 1}]
 
+class RefineQuestionAgent(BaseAgent):
+    def run(self, question: str) -> List[str]:
+        print(f"[AGENT] [Refine] Generating variations for: {question}")
+        p = self.prompts.get("refine_question", {})
+        system_content = p.get("system", "You are a Research Supervisor.")
+        user_template = p.get("user_template", "Original Question: {question}")
+        
+        try:
+            messages = [SystemMessage(content=system_content), HumanMessage(content=user_template.format(question=question))]
+            response = self.llm.invoke(messages)
+            data = extract_json_from_text(response.content)
+            if isinstance(data, dict) and "options" in data: return data["options"]
+            if isinstance(data, list): return data
+            return []
+        except Exception as e:
+            print(f"[ERROR] [Refine] Failed: {e}")
+            return []
+
 class InitialSearchAgent(BaseAgent):
     def __init__(self, llm: ChatOpenAI, prompts: Dict, source_manager: Any, settings: Dict = None):
         super().__init__(llm, prompts, settings)
         self.source_manager = source_manager
 
-    def run(self, questions: List[Dict]) -> List[Dict]:
+    def run(self, questions: List[Dict], depth: int = 1) -> List[Dict]:
         try:
             from ddgs import DDGS
         except ImportError:
@@ -56,15 +74,14 @@ class InitialSearchAgent(BaseAgent):
                 print("[ERROR] ddgs/duckduckgo_search not installed.")
                 return []
             
-        print(f"[AGENT] [Search] Generating queries for {len(questions)} questions...")
+        print(f"[AGENT] [Search] Generating queries for {len(questions)} questions (Depth: {depth})...")
         all_results = []
         p = self.prompts.get("search_query_generation", {})
         user_template = p.get("user_template", "Queries for: {question}")
         
         queries_per_q = self.params.get("search_queries_per_question", 3)
         results_per_q = self.params.get("search_results_per_query", 5)
-        search_depth = self.params.get("search_depth", 1)
-
+        
         with DDGS() as ddgs:
             for q in questions:
                 try:
@@ -85,7 +102,7 @@ class InitialSearchAgent(BaseAgent):
                                 all_results.append(self._fmt_result(r, q['id']))
 
                         # 2. Recursive Depth (if enabled)
-                        if search_depth > 1 and results:
+                        if depth > 1 and results:
                             top_result = results[0]
                             print(f"[AGENT] [Search] Recursion (Depth 2) on: {top_result.get('title')}")
                             
@@ -97,7 +114,7 @@ class InitialSearchAgent(BaseAgent):
                             for sub in sub_results:
                                 all_results.append(self._fmt_result(sub, q['id']))
                                 
-                            if search_depth > 2 and sub_results:
+                            if depth > 2 and sub_results:
                                 # Depth 3 (Max)
                                 sub_top = sub_results[0]
                                 deep_query = f"{follow_up_query} {sub_top.get('title')}"
@@ -193,11 +210,10 @@ class AcademicSpecialistAgent(BaseAgent):
             print(f"[WARNING] [Academic] Keyword extraction failed: {e}")
             return "+".join(re.findall(r'\w+', question)[:3])
 
-    def run(self, questions: List[Dict]) -> List[Dict]:
-        print(f"[AGENT] [Academic] Searching scholarly databases...")
+    def run(self, questions: List[Dict], depth: int = 1) -> List[Dict]:
+        print(f"[AGENT] [Academic] Searching scholarly databases (Depth: {depth})...")
         academic_results = []
         max_results = self.params.get("academic_papers_per_query", 3)
-        search_depth = self.params.get("search_depth", 1)
         
         for q in questions[:4]:
             keywords = self._get_keywords(q['question'])
@@ -223,7 +239,7 @@ class AcademicSpecialistAgent(BaseAgent):
                             })
                         
                         # Recursive Depth for Academic (Simulated by broadening terms)
-                        if search_depth > 1 and not entries:
+                        if depth > 1 and not entries:
                             # If no results, broaden automatically
                             broad_keywords = "+".join(keywords.split("+")[:2])
                             print(f"[AGENT] [Academic] Recursion (Depth 2): Broadening to {broad_keywords}")

@@ -3,6 +3,10 @@
     "system": "You are a Senior Research Architect. Decompose the research topic into 5-10 specific, non-overlapping questions. Output ONLY valid JSON with no preamble. Format: {\"questions\": [{\"id\": 1, \"question\": \"...\", \"priority\": 3}]}. Priority scale: 1=foundational, 5=advanced.",
     "user_template": "Topic: {topic}\nConstraints: {constraints}\n\nJSON output:"
   },
+  "refine_question": {
+    "system": "You are a Research Supervisor. The user wants to refine a specific research question. Provide exactly 5 alternative variations that are more specific, broader, or focus on different angles. Output ONLY JSON: {\"options\": [\"Option 1\", \"Option 2\", \"Option 3\", \"Option 4\", \"Option 5\"]}",
+    "user_template": "Original Question: {question}\n\nProvide 5 refined variations."
+  },
   "search_query_generation": {
     "user_template": "Generate 3 diverse, highly specific search queries to answer this research question: '{question}'. Focus on finding academic papers and expert reports. Output ONLY JSON: {{\"queries\": [\"query1\", \"query2\"]}}"
   },

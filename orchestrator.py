@@ -1,12 +1,12 @@
-# Script Version: 0.5.4 | Phase 2: Orchestration
-# Description: Orchestrator with Parallel Execution and Quality Gates.
-# Implementation: Added response_format: json_object to LLM init for robustness.
+# Script Version: 0.6.0 | Phase 3: GUI Integration
+# Description: Orchestrator updated to support streaming execution for GUI feedback.
+# Implementation: Added run_stream method to yield node outputs incrementally.
 
 import os
 import json
 import sqlite3
 import sys
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Generator
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_openai import ChatOpenAI
@@ -22,7 +22,7 @@ from vector_store import VectorStore
 
 class ResearchOrchestrator:
     def __init__(self, thread_id: str = "default_research"):
-        print(f"[ORCHESTRATOR] Initializing Phase 2 Parallel Workflow...")
+        print(f"[ORCHESTRATOR] Initializing Phase 3 Workflow (Streaming Enabled)...")
         self.thread_id = thread_id
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         
@@ -60,7 +60,6 @@ class ResearchOrchestrator:
         model_id = role_cfg.get("model_id", self.settings.get("model_id"))
         temp = role_cfg.get("temperature", 0.2)
         
-        # Enforce JSON mode for robustness where supported
         model_kwargs = {"response_format": {"type": "json_object"}}
         
         return ChatOpenAI(
@@ -189,5 +188,11 @@ class ResearchOrchestrator:
         return {"final_report": final_report, "is_complete": True}
 
     def run_full(self, initial_state: ResearchState):
+        """Blocking execution of the full graph."""
         config = {"configurable": {"thread_id": self.thread_id}}
         return self.workflow.invoke(initial_state, config=config)
+
+    def run_stream(self, initial_state: ResearchState) -> Generator[Dict, None, None]:
+        """Streaming execution yielding node outputs."""
+        config = {"configurable": {"thread_id": self.thread_id}}
+        return self.workflow.stream(initial_state, config=config)

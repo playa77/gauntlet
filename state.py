@@ -1,4 +1,4 @@
-# Script Version: 0.3.1 | Phase 2: Orchestration
+# Script Version: 0.4.0 | Phase 2: Orchestration
 # Description: Shared state definition for the cyclical research graph.
 # Implementation: Uses Annotated/operator.add for persistent accumulation of logs and sources.
 
@@ -32,12 +32,13 @@ class ResearchState(TypedDict):
     is_complete: bool
     iteration_count: int
     max_iterations: int
+    iteration_status: str # For UI display of parallel activities
     
     # Knowledge Base (Accumulated via operator.add)
-    # This ensures that every node's contribution is appended to the list
     logs: Annotated[List[str], operator.add]
     sources: Annotated[List[SourceMetadata], operator.add]
     knowledge_fragments: Annotated[List[Dict[str, Any]], operator.add]
+    structured_entities: Annotated[List[Dict[str, Any]], operator.add] # New for Knowledge Graph
     
     # Analysis Results
     research_questions: List[ResearchQuestion]

@@ -1,20 +1,28 @@
 {
   "decompose_topic": {
-    "system": "You are a Senior Research Architect. Your task is to take a broad research topic and decompose it into 5-10 specific, non-overlapping research questions. Each question must be designed to uncover deep insights, methodology, or expert perspectives. Prioritize questions from foundational to advanced. Output MUST be a valid JSON list of objects with 'id', 'question', and 'priority' (1-5).",
-    "user_template": "Topic: {topic}\nConstraints: {constraints}\n\nProvide the JSON list now:"
+    "system": "You are a Senior Research Architect. Decompose the research topic into 5-10 specific, non-overlapping questions. Output ONLY valid JSON with no preamble. Format: {\"questions\": [{\"id\": 1, \"question\": \"...\", \"priority\": 3}]}. Priority scale: 1=foundational, 5=advanced.",
+    "user_template": "Topic: {topic}\nConstraints: {constraints}\n\nJSON output:"
   },
   "search_query_generation": {
-    "user_template": "Generate 3 diverse, highly specific search queries to answer this research question: '{question}'. Focus on finding academic papers and expert reports. Output as a simple comma-separated list."
+    "user_template": "Generate 3 diverse, highly specific search queries to answer this research question: '{question}'. Focus on finding academic papers and expert reports. Output ONLY JSON: {{\"queries\": [\"query1\", \"query2\"]}}"
+  },
+  "academic_keyword_extraction": {
+    "system": "You are a Scholarly Librarian. Convert a research question into exactly 3 highly effective keywords for an academic database (arXiv). Focus on technical terms. Output ONLY JSON: {\"keywords\": \"keyword1 keyword2 keyword3\"}. Do NOT use sentences.",
+    "user_template": "Question: {question}\n\nJSON output:"
   },
   "source_quality_assessment": {
-    "user_template": "Evaluate the following source for a deep research project. Assign a quality score from 0.0 to 1.0 based on credibility and relevance. Output ONLY a JSON object with 'score' (float) and 'reason' (string).\n\nURL: {url}\nTitle: {title}\nSnippet: {snippet}"
+    "user_template": "Evaluate the following source using this rubric:\n0.8-1.0: Peer-reviewed papers, government reports\n0.5-0.7: Expert blogs, reputable news\n0.0-0.4: Low quality\n\nOutput ONLY JSON: {{\"score\": 0.85, \"reason\": \"...\"}}\n\nURL: {url}\nTitle: {title}\nSnippet: {snippet}"
+  },
+  "knowledge_graph_extraction": {
+    "system": "You are a Knowledge Engineer. Extract key entities and relationships. Output ONLY JSON: {\"triplets\": [{\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\"}]}",
+    "user_template": "Context: {context}\n\nJSON output:"
   },
   "gap_analysis": {
-    "system": "You are a Senior Research Auditor. Your task is to compare the original research questions against the knowledge fragments retrieved so far. Identify specific gaps where information is missing, outdated, or lacks sufficient evidence. Output MUST be a valid JSON list of strings, where each string is a specific gap to be researched.",
-    "user_template": "Original Questions:\n{questions}\n\nRetrieved Knowledge:\n{context}\n\nIdentify the gaps:"
+    "system": "You are a Senior Research Auditor. Identify specific gaps where information is missing. Output ONLY JSON: {\"gaps\": [\"gap description 1\", \"gap description 2\"]}",
+    "user_template": "Original Questions:\n{questions}\n\nRetrieved Knowledge:\n{context}\n\nJSON output:"
   },
   "section_writer": {
-    "system": "You are a Professional Research Synthesizer. Write a detailed, formal research section based ONLY on the provided knowledge fragments. Use academic tone. Include inline citations in [Source X] format.",
+    "system": "You are a Professional Research Synthesizer. Write a detailed, formal research section (1000-1500 words). Output ONLY JSON: {\"section_text\": \"...markdown content...\"}",
     "user_template": "Research Question: {question}\n\nKnowledge Fragments:\n{fragments}"
   }
 }

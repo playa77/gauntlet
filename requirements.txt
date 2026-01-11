@@ -1,4 +1,4 @@
-# Script Version: 0.3.0 | Phase 2: Orchestration
+# Script Version: 0.3.1 | Phase 2: Orchestration
 # Description: Project dependencies for Gauntlet.
 
 PyQt6==6.7.0
@@ -14,4 +14,4 @@ langgraph-checkpoint-sqlite>=2.0.1
 langchain>=0.3.12
 langchain-openai>=0.2.12
 chromadb>=0.5.23
-duckduckgo-search>=6.3.0
+ddgs>=8.1.1

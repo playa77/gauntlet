@@ -1,6 +1,6 @@
-# Script Version: 0.4.1 | Phase 2: Orchestration
-# Description: Specialized agents using externalized prompts and role-specific configurations.
-# Implementation: Strictly separates prompt logic from Python code.
+# Script Version: 0.6.8 | Phase 2: Orchestration
+# Description: Specialized agents with robust scholarly query cleaning.
+# Implementation: Fixed AcademicAgent system prompt usage and cleaned up SearchAgent.
 
 import json
 import re
@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from utils import extract_json_from_text
 
 class BaseAgent:
     """Base class for all agents to handle LLM and externalized prompts."""
@@ -37,53 +38,103 @@ class DecomposeTopicAgent(BaseAgent):
                 HumanMessage(content=user_content)
             ]
             response = self.llm.invoke(messages)
-            content = response.content
-
-            # Robust JSON extraction
-            json_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
-            return json.loads(content)
+            data = extract_json_from_text(response.content)
+            
+            if isinstance(data, dict) and "questions" in data:
+                return data["questions"]
+            if isinstance(data, list):
+                return data
+            
+            print(f"[WARNING] [Decompose] Invalid JSON structure. Using fallback.")
+            return [{"id": 1, "question": f"General overview of {topic}", "priority": 1}]
                 
         except Exception as e:
             print(f"[ERROR] [Decompose] Failed: {str(e)}")
             return [{"id": 1, "question": f"General overview of {topic}", "priority": 1}]
 
 class InitialSearchAgent(BaseAgent):
-    """Generates search queries and retrieves candidate URLs using DuckDuckGo."""
+    """Generates search queries and retrieves candidate URLs using ddgs."""
     def __init__(self, llm: ChatOpenAI, prompts: Dict, source_manager: Any):
         super().__init__(llm, prompts)
         self.source_manager = source_manager
 
     def run(self, questions: List[Dict]) -> List[Dict]:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            try:
+                from duckduckgo_search import DDGS
+            except ImportError:
+                print("[ERROR] ddgs/duckduckgo_search not installed.")
+                return []
+            
         print(f"[AGENT] [Search] Generating queries for {len(questions)} questions...")
         
         all_results = []
         p = self.prompts.get("search_query_generation", {})
         user_template = p.get("user_template", "Queries for: {question}")
 
-        for q in questions:
-            try:
-                user_content = user_template.format(question=q['question'])
-                response = self.llm.invoke([HumanMessage(content=user_content)])
-                queries = [item.strip().strip('"') for item in response.content.split(',')]
-                
-                for query in queries:
-                    self.source_manager._wait_for_slot()
-                    print(f"[AGENT] [Search] Executing query: {query}")
-                    with DDGS() as ddgs:
+        with DDGS() as ddgs:
+            for q in questions:
+                try:
+                    user_content = user_template.format(question=q['question'])
+                    response = self.llm.invoke([HumanMessage(content=user_content)])
+                    content = response.content
+                    
+                    queries = []
+                    
+                    # Strategy 1: JSON Extraction
+                    try:
+                        data = extract_json_from_text(content)
+                        if isinstance(data, dict):
+                            for key in ["queries", "Queries", '"queries"']:
+                                if key in data and isinstance(data[key], list):
+                                    queries = data[key]
+                                    break
+                        elif isinstance(data, list):
+                            queries = data
+                    except Exception:
+                        pass
+
+                    # Strategy 2: Regex Extraction
+                    if not queries:
+                        matches = re.findall(r'"([^"]+)"', content)
+                        if matches:
+                            queries = [m for m in matches if m.lower() not in ["queries", "query"]]
+
+                    # Strategy 3: Comma Split
+                    if not queries:
+                        queries = [item.strip().strip('"').strip("'") for item in content.split(',')]
+
+                    # Validation
+                    valid_queries = []
+                    for x in queries:
+                        if isinstance(x, (str, int, float)):
+                            s = str(x).strip()
+                            if len(s) > 3:
+                                valid_queries.append(s)
+                    
+                    if not valid_queries:
+                        print(f"[WARNING] [Search] No valid queries found for Q{q['id']}")
+                        continue
+
+                    for query in valid_queries[:2]:
+                        self.source_manager._wait_for_slot()
+                        print(f"[AGENT] [Search] Executing query: {query}")
+                        
                         results = list(ddgs.text(query, max_results=5))
                         for r in results:
-                            all_results.append({
-                                "url": r['href'],
-                                "title": r['title'],
-                                "snippet": r['body'],
-                                "question_id": q['id']
-                            })
-                    self.source_manager.last_request_completion_time = time.perf_counter()
-            except Exception as e:
-                print(f"[ERROR] [Search] Failed query for question {q['id']}: {e}")
+                            if isinstance(r, dict):
+                                all_results.append({
+                                    "url": r.get('href'),
+                                    "title": r.get('title'),
+                                    "snippet": r.get('body'),
+                                    "question_id": q['id'],
+                                    "source_type": "web"
+                                })
+                            
+                except Exception as e:
+                    print(f"[ERROR] [Search] Failed query for Q{q['id']}: {type(e).__name__}: {e}")
                 
         return all_results
 
@@ -96,7 +147,7 @@ class SourceQualityAgent(BaseAgent):
         p = self.prompts.get("source_quality_assessment", {})
         user_template = p.get("user_template", "Score: {url}")
 
-        for source in candidates[:10]: 
+        for source in candidates[:15]: 
             try:
                 user_content = user_template.format(
                     url=source['url'], 
@@ -104,12 +155,20 @@ class SourceQualityAgent(BaseAgent):
                     snippet=source['snippet']
                 )
                 response = self.llm.invoke([HumanMessage(content=user_content)])
-                match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(0))
+                data = extract_json_from_text(response.content)
+                
+                if isinstance(data, list) and len(data) > 0:
+                    data = data[0]
+                
+                if isinstance(data, dict):
                     source.update(data)
+                    if 'source_type' not in source:
+                        source['source_type'] = 'web'
                     scored_sources.append(source)
                     total_score += float(data.get('score', 0))
+                else:
+                    pass
+                    
             except Exception as e:
                 print(f"[ERROR] [Quality] Failed to score {source['url']}: {e}")
         
@@ -117,30 +176,80 @@ class SourceQualityAgent(BaseAgent):
         return {"sources": scored_sources, "average_score": avg_score}
 
 class AcademicSpecialistAgent(BaseAgent):
-    """Queries scholarly APIs (arXiv) to find peer-reviewed sources."""
+    """Queries scholarly APIs (arXiv) using LLM-optimized keywords."""
     def __init__(self, llm: ChatOpenAI, prompts: Dict, source_manager: Any):
         super().__init__(llm, prompts)
         self.source_manager = source_manager
+        self.headers = {"User-Agent": "GauntletResearch/1.0 (Educational; Python)"}
+
+    def _get_keywords(self, question: str) -> str:
+        """Uses LLM to extract optimized keywords and cleans them for URL safety."""
+        p = self.prompts.get("academic_keyword_extraction", {})
+        system_content = p.get("system", "You are a Scholarly Librarian.")
+        user_template = p.get("user_template", "Question: {question}")
+        
+        user_content = user_template.format(question=question)
+        
+        try:
+            # FIX: Include SystemMessage so the LLM knows its role and JSON constraints
+            messages = [
+                SystemMessage(content=system_content),
+                HumanMessage(content=user_content)
+            ]
+            response = self.llm.invoke(messages)
+            
+            content = response.content
+            data = extract_json_from_text(content)
+            if isinstance(data, dict) and "keywords" in data:
+                content = data["keywords"]
+            elif isinstance(data, list):
+                content = " ".join(str(x) for x in data)
+                
+            tokens = re.findall(r'[a-zA-Z0-9]+', str(content))
+            
+            fillers = {
+                'here', 'are', 'keywords', 'for', 'your', 'question', 'the', 'and', 'with', 
+                'output', 'example', 'is', 'a', 'of', 'to', 'in', 'on', 'at', 'by', 'from',
+                'what', 'how', 'why', 'which', 'that', 'this', 'these', 'those', 'can'
+            }
+            
+            clean_tokens = [t for t in tokens if t.lower() not in fillers]
+            return "+".join(clean_tokens[:3]) 
+        except Exception as e:
+            print(f"[WARNING] [Academic] Keyword extraction failed, using fallback: {e}")
+            return "+".join(re.findall(r'\w+', question)[:3])
 
     def run(self, questions: List[Dict]) -> List[Dict]:
         print(f"[AGENT] [Academic] Searching scholarly databases...")
         academic_results = []
         
-        for q in questions[:3]:
-            query = q['question']
-            encoded_query = urllib.parse.quote(query)
+        for q in questions[:4]:
+            keywords = self._get_keywords(q['question'])
+            if not keywords: continue
             
-            # arXiv Search
-            print(f"[AGENT] [Academic] Querying arXiv for: {query[:50]}...")
-            arxiv_url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&start=0&max_results=3"
+            # Use HTTPS and follow redirects
+            arxiv_url = f"https://export.arxiv.org/api/query?search_query=all:{keywords}&start=0&max_results=3"
+            print(f"[AGENT] [Academic] Querying arXiv: {arxiv_url}")
+            
             try:
                 self.source_manager._wait_for_slot()
-                with httpx.Client(timeout=20.0) as client:
+                with httpx.Client(timeout=20.0, headers=self.headers, follow_redirects=True) as client:
                     resp = client.get(arxiv_url)
-                    self.source_manager.last_request_completion_time = time.perf_counter()
+                    
                     if resp.status_code == 200:
                         root = ET.fromstring(resp.text)
-                        for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
+                        entries = root.findall('{http://www.w3.org/2005/Atom}entry')
+                        
+                        if not entries and "+" in keywords:
+                            broad_keywords = "+".join(keywords.split("+")[:2])
+                            print(f"[AGENT] [Academic] No results. Broadening to: {broad_keywords}")
+                            arxiv_url = f"https://export.arxiv.org/api/query?search_query=all:{broad_keywords}&start=0&max_results=2"
+                            resp = client.get(arxiv_url)
+                            if resp.status_code == 200:
+                                root = ET.fromstring(resp.text)
+                                entries = root.findall('{http://www.w3.org/2005/Atom}entry')
+
+                        for entry in entries:
                             academic_results.append({
                                 "url": entry.find('{http://www.w3.org/2005/Atom}id').text,
                                 "title": f"[arXiv] {entry.find('{http://www.w3.org/2005/Atom}title').text.strip()}",
@@ -148,10 +257,35 @@ class AcademicSpecialistAgent(BaseAgent):
                                 "question_id": q['id'],
                                 "source_type": "academic"
                             })
+                    else:
+                        print(f"[ERROR] [Academic] arXiv returned status {resp.status_code}")
             except Exception as e:
-                print(f"[ERROR] [Academic] arXiv failed: {e}")
+                print(f"[ERROR] [Academic] arXiv failed for {keywords}: {e}")
 
         return academic_results
+
+class KnowledgeGraphAgent(BaseAgent):
+    """Extracts structured entities and relationships from raw fragments."""
+    def run(self, fragments: List[str]) -> List[Dict]:
+        print(f"[AGENT] [KnowledgeGraph] Structuring {len(fragments)} fragments...")
+        p = self.prompts.get("knowledge_graph_extraction", {})
+        system_content = p.get("system", "Extract entities and relationships.")
+        user_template = p.get("user_template", "Context: {context}")
+        
+        context = "\n".join(fragments[:10])
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_content),
+                HumanMessage(content=user_template.format(context=context))
+            ])
+            data = extract_json_from_text(response.content)
+            
+            if isinstance(data, dict) and "triplets" in data:
+                return data["triplets"]
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"[ERROR] [KnowledgeGraph] Extraction failed: {e}")
+            return []
 
 class GapAnalyzerAgent(BaseAgent):
     """Audits accumulated knowledge against research questions to identify missing info."""
@@ -171,10 +305,11 @@ class GapAnalyzerAgent(BaseAgent):
                 SystemMessage(content=system_content), 
                 HumanMessage(content=user_content)
             ])
-            match = re.search(r'\[.*\]', response.content, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-            return []
+            data = extract_json_from_text(response.content)
+            
+            if isinstance(data, dict) and "gaps" in data:
+                return data["gaps"]
+            return data if isinstance(data, list) else []
         except Exception as e:
             print(f"[ERROR] [GapAnalyzer] Failed: {e}")
             return []
@@ -197,6 +332,14 @@ class SectionWriterAgent(BaseAgent):
                 HumanMessage(content=user_content)
             ]
             response = self.llm.invoke(messages)
+            
+            try:
+                data = json.loads(response.content)
+                if isinstance(data, dict) and "section_text" in data:
+                    return data["section_text"]
+            except:
+                pass
+                
             return response.content
         except Exception as e:
             return f"Error drafting section: {str(e)}"

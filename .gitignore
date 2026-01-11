@@ -1,6 +1,12 @@
 ideas.txt
 test_phase*.py
 files.zip
+research_state.db
+roadmap.*
+action_plan*
+design_doc.*
+tech_spec*
+research_db/
 # --- Python & Virtual Env ---
 __pycache__/
 *.py[cod]

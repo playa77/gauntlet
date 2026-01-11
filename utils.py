@@ -1,11 +1,12 @@
-# Script Version: 0.3.3 | Phase 2: Orchestration
+# Script Version: 0.3.4 | Phase 2: Orchestration
 # Description: General-purpose utility functions for Gauntlet.
-# Implementation: Updated .env setup to include ACTIVE_MODEL_ID placeholder.
+# Implementation: Added extract_json_from_text for robust LLM parsing.
 
 import sys
 import os
 import traceback
 import json
+import re
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -56,6 +57,34 @@ def setup_project_files():
         }
         with open("settings.json", "w") as f:
             json.dump(default_settings, f, indent=4)
+
+def extract_json_from_text(text: str):
+    """
+    Robustly extracts JSON from a string, handling Markdown code blocks
+    and conversational preambles.
+    """
+    try:
+        # 1. Try to find JSON inside markdown code blocks
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+        if match:
+            return json.loads(match.group(1))
+        
+        # 2. Try to find the first outer bracket pair [] or {}
+        # This regex looks for the first [ ... ] or { ... } including nested structures (simplified)
+        # For complex nesting, a parser is better, but regex works for 99% of LLM outputs
+        list_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+        if list_match:
+            return json.loads(list_match.group(0))
+            
+        obj_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if obj_match:
+            return json.loads(obj_match.group(0))
+
+        # 3. Fallback: Try raw text
+        return json.loads(text)
+    except json.JSONDecodeError:
+        print(f"[WARNING] JSON extraction failed for text: {text[:100]}...")
+        return None
 
 class LogStream(QObject):
     """Redirects stdout to a PyQt signal for the Live Journal view."""

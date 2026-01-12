@@ -1,5 +1,5 @@
-# Script Version: 0.9.0 | Phase 4: Advanced Features
-# Description: Added RefineQuestionAgent and dynamic depth support.
+# Script Version: 0.9.1 | Phase 5: Polish & Depth Control
+# Description: Added gap-to-question generation and structured gap analysis.
 
 import json
 import re
@@ -40,6 +40,29 @@ class DecomposeTopicAgent(BaseAgent):
         except Exception as e:
             print(f"[ERROR] [Decompose] Failed: {str(e)}")
             return [{"id": 1, "question": f"General overview of {topic}", "priority": 1}]
+
+    def generate_from_gaps(self, gaps: List[Dict]) -> List[Dict]:
+        print(f"[AGENT] [Decompose] Generating questions from {len(gaps)} gaps...")
+        p = self.prompts.get("gap_to_question", {})
+        system_content = p.get("system", "You are a Research Strategist.")
+        user_template = p.get("user_template", "Gaps: {gaps}")
+        
+        # Format gaps for prompt
+        gaps_text = json.dumps(gaps, indent=2)
+        
+        try:
+            messages = [SystemMessage(content=system_content), HumanMessage(content=user_template.format(gaps=gaps_text))]
+            response = self.llm.invoke(messages)
+            data = extract_json_from_text(response.content)
+            
+            # Expecting: [{"related_gap_id": ..., "question": "..."}] or similar
+            # We map back to parent questions in the orchestrator
+            if isinstance(data, dict) and "questions" in data: return data["questions"]
+            if isinstance(data, list): return data
+            return []
+        except Exception as e:
+            print(f"[ERROR] [Decompose] Gap conversion failed: {e}")
+            return []
 
 class RefineQuestionAgent(BaseAgent):
     def run(self, question: str) -> List[str]:
@@ -238,9 +261,8 @@ class AcademicSpecialistAgent(BaseAgent):
                                 "source_type": "academic"
                             })
                         
-                        # Recursive Depth for Academic (Simulated by broadening terms)
+                        # Recursive Depth for Academic
                         if depth > 1 and not entries:
-                            # If no results, broaden automatically
                             broad_keywords = "+".join(keywords.split("+")[:2])
                             print(f"[AGENT] [Academic] Recursion (Depth 2): Broadening to {broad_keywords}")
                             arxiv_url = f"https://export.arxiv.org/api/query?search_query=all:{broad_keywords}&start=0&max_results=2"
@@ -279,18 +301,23 @@ class KnowledgeGraphAgent(BaseAgent):
             return []
 
 class GapAnalyzerAgent(BaseAgent):
-    def run(self, questions: List[Dict], fragments: List[str]) -> List[str]:
+    def run(self, questions: List[Dict], fragments: List[str]) -> List[Dict]:
         print(f"[AGENT] [GapAnalyzer] Auditing research coverage...")
         p = self.prompts.get("gap_analysis", {})
         system_content = p.get("system", "Identify gaps.")
         user_template = p.get("user_template", "Gaps in: {questions}")
+        
         context = "\n".join([f"- {f}" for f in fragments[:15]])
         q_list = "\n".join([f"{q['id']}. {q['question']}" for q in questions])
+        
         try:
             response = self.llm.invoke([SystemMessage(content=system_content), HumanMessage(content=user_template.format(questions=q_list, context=context))])
             data = extract_json_from_text(response.content)
+            
+            # Expecting: {"gaps": [{"related_question_id": 1, "description": "..."}]}
             if isinstance(data, dict) and "gaps" in data: return data["gaps"]
-            return data if isinstance(data, list) else []
+            if isinstance(data, list): return data
+            return []
         except Exception as e:
             print(f"[ERROR] [GapAnalyzer] Failed: {e}")
             return []

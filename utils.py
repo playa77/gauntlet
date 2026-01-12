@@ -1,6 +1,5 @@
-# Script Version: 0.3.4 | Phase 2: Orchestration
-# Description: General-purpose utility functions for Gauntlet.
-# Implementation: Added extract_json_from_text for robust LLM parsing.
+# Script Version: 0.3.6 | Phase 5: Polish & Depth Control
+# Description: Updated ModelTokenTracker to track by Role + Model.
 
 import sys
 import os
@@ -9,6 +8,7 @@ import json
 import re
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
+from langchain_core.callbacks import BaseCallbackHandler
 
 def crash_handler(exctype, value, tb):
     """Global exception handler for uncaught exceptions."""
@@ -29,14 +29,13 @@ def setup_project_files():
             f.write('OPENROUTER_API_KEY="YOUR_API_KEY_HERE"\n')
             f.write('ACTIVE_MODEL_ID="YOUR_MODEL_ID_HERE"\n')
     else:
-        # Append ACTIVE_MODEL_ID if missing
         with open(".env", "r") as f:
             content = f.read()
         if "ACTIVE_MODEL_ID" not in content:
             with open(".env", "a") as f:
                 f.write('ACTIVE_MODEL_ID="YOUR_MODEL_ID_HERE"\n')
 
-    # models.json - Template only, user must populate
+    # models.json
     if not Path("models.json").exists():
         print("[INFO] Creating template models.json.")
         default_models = {
@@ -59,19 +58,12 @@ def setup_project_files():
             json.dump(default_settings, f, indent=4)
 
 def extract_json_from_text(text: str):
-    """
-    Robustly extracts JSON from a string, handling Markdown code blocks
-    and conversational preambles.
-    """
+    """Robustly extracts JSON from a string."""
     try:
-        # 1. Try to find JSON inside markdown code blocks
         match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
         if match:
             return json.loads(match.group(1))
         
-        # 2. Try to find the first outer bracket pair [] or {}
-        # This regex looks for the first [ ... ] or { ... } including nested structures (simplified)
-        # For complex nesting, a parser is better, but regex works for 99% of LLM outputs
         list_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
         if list_match:
             return json.loads(list_match.group(0))
@@ -80,7 +72,6 @@ def extract_json_from_text(text: str):
         if obj_match:
             return json.loads(obj_match.group(0))
 
-        # 3. Fallback: Try raw text
         return json.loads(text)
     except json.JSONDecodeError:
         print(f"[WARNING] JSON extraction failed for text: {text[:100]}...")
@@ -96,3 +87,30 @@ class LogStream(QObject):
             
     def flush(self):
         pass
+
+class ModelTokenTracker(BaseCallbackHandler):
+    """Tracks token usage per role and model."""
+    def __init__(self, role_name: str):
+        self.role_name = role_name
+        self.delta_usage = {} # Reset after every node read
+
+    def on_llm_end(self, response, **kwargs):
+        if response.llm_output and "token_usage" in response.llm_output:
+            usage = response.llm_output["token_usage"]
+            model = response.llm_output.get("model_name", "unknown_model")
+            
+            # Composite key to distinguish roles using the same model
+            key = f"Role: {self.role_name} | Model: {model}"
+            
+            if key not in self.delta_usage:
+                self.delta_usage[key] = {"input": 0, "output": 0, "total": 0}
+            
+            self.delta_usage[key]["input"] += usage.get("prompt_tokens", 0)
+            self.delta_usage[key]["output"] += usage.get("completion_tokens", 0)
+            self.delta_usage[key]["total"] += usage.get("total_tokens", 0)
+
+    def get_and_reset_delta(self):
+        """Returns accumulated usage since last call and resets."""
+        data = self.delta_usage.copy()
+        self.delta_usage = {}
+        return data

@@ -1,5 +1,5 @@
-# Script Version: 0.4.0 | Phase 4: Advanced Features
-# Description: Added UI for split search depth parameters.
+# Script Version: 0.4.3 | Phase 5: Polish & Depth Control
+# Description: Updated parameter ranges (0-999 for global limit, 0-63 for others).
 
 import os
 from PyQt6.QtWidgets import (
@@ -119,7 +119,8 @@ class SettingsDialog(QDialog):
         self.params_widgets = {}
         
         params = [
-            ("max_iterations", "Max Iterations (Hard Limit)", int),
+            ("max_iterations", "Global Safety Limit (Total Steps)", int),
+            ("max_gap_iterations", "Max Gap Resolution Rounds", int),
             ("max_gaps_allowed", "Max Allowable Gaps (Goal)", int),
             ("initial_search_depth", "Initial Search Depth (Iter 0)", int),
             ("refinement_search_depth", "Refinement Search Depth (Iter > 0)", int),
@@ -132,9 +133,10 @@ class SettingsDialog(QDialog):
         for key, label, dtype in params:
             if dtype == int:
                 widget = QSpinBox()
-                widget.setRange(0, 50)
-                if "depth" in key:
-                    widget.setRange(1, 4)
+                if key == "max_iterations":
+                    widget.setRange(0, 999)
+                else:
+                    widget.setRange(0, 63)
             else:
                 widget = QDoubleSpinBox()
                 widget.setRange(0.0, 1.0)

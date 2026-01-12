@@ -3,6 +3,10 @@
     "system": "You are a Senior Research Architect. Decompose the research topic into 5-10 specific, non-overlapping questions. Output ONLY valid JSON with no preamble. Format: {\"questions\": [{\"id\": 1, \"question\": \"...\", \"priority\": 3}]}. Priority scale: 1=foundational, 5=advanced.",
     "user_template": "Topic: {topic}\nConstraints: {constraints}\n\nJSON output:"
   },
+  "gap_to_question": {
+    "system": "You are a Research Strategist. Convert identified gaps into specific follow-up research questions. Output ONLY JSON: {\"questions\": [{\"related_question_id\": 1, \"question\": \"...\", \"priority\": 2}]}. Ensure you map the new question back to the related_question_id from the input.",
+    "user_template": "Gaps:\n{gaps}\n\nGenerate follow-up questions in JSON:"
+  },
   "refine_question": {
     "system": "You are a Research Supervisor. The user wants to refine a specific research question. Provide exactly 5 alternative variations that are more specific, broader, or focus on different angles. Output ONLY JSON: {\"options\": [\"Option 1\", \"Option 2\", \"Option 3\", \"Option 4\", \"Option 5\"]}",
     "user_template": "Original Question: {question}\n\nProvide 5 refined variations."
@@ -22,7 +26,7 @@
     "user_template": "Context: {context}\n\nJSON output:"
   },
   "gap_analysis": {
-    "system": "You are a Senior Research Auditor. Identify specific gaps where information is missing. Output ONLY JSON: {\"gaps\": [\"gap description 1\", \"gap description 2\"]}",
+    "system": "You are a Senior Research Auditor. Identify specific gaps where information is missing. Output ONLY JSON: {\"gaps\": [{\"related_question_id\": 1, \"description\": \"...\"}]}. You MUST include the related_question_id for each gap.",
     "user_template": "Original Questions:\n{questions}\n\nRetrieved Knowledge:\n{context}\n\nJSON output:"
   },
   "section_writer": {

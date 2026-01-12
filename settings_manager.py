@@ -1,5 +1,5 @@
-# Script Version: 0.4.1 | Phase 4: Advanced Features
-# Description: Fixed missing ModelManager and PromptManager classes.
+# Script Version: 0.4.4 | Phase 5: Polish & Depth Control
+# Description: Complete file with SettingsManager, ModelManager, and PromptManager.
 
 import json
 import sys
@@ -15,10 +15,11 @@ class SettingsManager:
         "api_timeout": 360,
         "font_size": 16,
         "parameters": {
-            "max_iterations": 25,             # Hard limit (Safety valve)
+            "max_iterations": 50,             # Global Safety Valve (Total steps)
+            "max_gap_iterations": 3,          # Max rounds to resolve a gap (per question)
             "max_gaps_allowed": 0,            # Goal (Stop if gaps <= this)
-            "initial_search_depth": 2,        # Depth for Iteration 0
-            "refinement_search_depth": 1,     # Depth for Iteration > 0
+            "initial_search_depth": 2,        # Web/Academic Search Depth for Iteration 0
+            "refinement_search_depth": 1,     # Web/Academic Search Depth for Iteration > 0
             "search_queries_per_question": 3,
             "search_results_per_query": 5,
             "min_quality_score": 0.6,

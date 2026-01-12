@@ -1,5 +1,5 @@
-# Script Version: 0.4.2 | Phase 5: Polish & Depth Control
-# Description: Added token_usage tracking with merge logic.
+# Script Version: 0.5.0 | Phase 6: Export & News Mode
+# Description: Added research_mode to ResearchState.
 
 from typing import List, Dict, Any, TypedDict, Annotated, Optional
 import operator
@@ -35,7 +35,7 @@ class SourceMetadata(TypedDict):
     title: str
     snippet: str
     quality_score: float
-    source_type: str # "web", "academic", "local"
+    source_type: str # "web", "academic", "local", "news", "rss"
 
 class ResearchState(TypedDict):
     """
@@ -45,6 +45,7 @@ class ResearchState(TypedDict):
     research_topic: str
     user_constraints: Dict[str, Any]
     model_id: str
+    research_mode: str # "standard" or "news"
     
     # Progress Tracking
     current_phase: str

@@ -1,5 +1,5 @@
-# Script Version: 0.9.5 | Phase 5: Polish & Depth Control
-# Description: Adjusted Metrics table width for Role/Model display.
+# Script Version: 0.9.6 | Phase 6: Export & News Mode
+# Description: Added News Mode checkbox and Export menu (PDF/DOCX).
 
 import sys
 import os
@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import (
     QTextEdit, QPushButton, QLabel, QSplitter, QMessageBox, QComboBox, 
     QStatusBar, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem, QMenu,
-    QInputDialog, QDialog, QAbstractItemView, QDialogButtonBox
+    QInputDialog, QDialog, QAbstractItemView, QDialogButtonBox, QCheckBox,
+    QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QAction
@@ -22,6 +23,7 @@ from orchestrator import ResearchOrchestrator
 from utils import setup_project_files, LogStream, crash_handler
 from settings_manager import SettingsManager, ModelManager, PromptManager
 from settings_ui import SettingsDialog
+from export_manager import ExportManager
 
 sys.excepthook = crash_handler
 
@@ -251,7 +253,7 @@ class ResearchWorker(QThread):
 class GauntletUI(QMainWindow):
     def __init__(self, log_stream):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.9.5)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.9.6)")
         self.resize(1400, 900)
 
         self.settings_manager = SettingsManager()
@@ -284,6 +286,10 @@ class GauntletUI(QMainWindow):
         self.topic_input.setPlaceholderText("Enter research topic...")
         self.topic_input.setMaximumHeight(60)
         
+        # News Mode Checkbox
+        self.news_mode_chk = QCheckBox("News Mode")
+        self.news_mode_chk.setToolTip("Prioritize news sources and RSS feeds.")
+        
         self.action_btn = QPushButton("Generate Plan")
         self.action_btn.setFixedWidth(150)
         self.action_btn.setFixedHeight(60)
@@ -302,6 +308,7 @@ class GauntletUI(QMainWindow):
         self.settings_btn.clicked.connect(self._open_settings)
 
         top_bar.addWidget(self.topic_input)
+        top_bar.addWidget(self.news_mode_chk)
         top_bar.addWidget(self.action_btn)
         top_bar.addWidget(self.stop_btn)
         top_bar.addWidget(self.settings_btn)
@@ -364,10 +371,23 @@ class GauntletUI(QMainWindow):
         self.report_view_container = QWidget()
         rv_layout = QVBoxLayout(self.report_view_container)
         report_toolbar = QHBoxLayout()
+        
         copy_btn = QPushButton("Copy Markdown")
         copy_btn.clicked.connect(self._copy_report)
+        
+        export_btn = QPushButton("Export...")
+        export_menu = QMenu(self)
+        pdf_action = QAction("Export to PDF", self)
+        pdf_action.triggered.connect(self._export_pdf)
+        docx_action = QAction("Export to DOCX", self)
+        docx_action.triggered.connect(self._export_docx)
+        export_menu.addAction(pdf_action)
+        export_menu.addAction(docx_action)
+        export_btn.setMenu(export_menu)
+        
         report_toolbar.addStretch()
         report_toolbar.addWidget(copy_btn)
+        report_toolbar.addWidget(export_btn)
         rv_layout.addLayout(report_toolbar)
         
         self.report_view = QTextEdit()
@@ -472,10 +492,13 @@ class GauntletUI(QMainWindow):
         self.report_view_container.show()
         self.report_view.clear()
         
+        research_mode = "news" if self.news_mode_chk.isChecked() else "standard"
+        
         self.current_research_state = {
             "research_topic": self.topic_input.toPlainText().strip(),
             "user_constraints": {},
             "current_phase": "exploration",
+            "research_mode": research_mode,
             "logs": [],
             "research_questions": questions,
             "sources": [],
@@ -496,7 +519,7 @@ class GauntletUI(QMainWindow):
     def _start_research(self):
         self._set_busy(True)
         self.action_btn.setText("Researching...")
-        self.status_bar.showMessage("Research in progress...")
+        self.status_bar.showMessage(f"Research in progress ({self.current_research_state['research_mode']} mode)...")
         self.tabs.setCurrentIndex(0)
 
         limit = self.global_recursion_limit
@@ -579,6 +602,7 @@ class GauntletUI(QMainWindow):
         self.action_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
         self.settings_btn.setEnabled(not busy)
+        self.news_mode_chk.setEnabled(not busy)
         if not busy:
             self.stop_btn.setStyleSheet("background-color: #8B0000; color: white; font-weight: bold;")
 
@@ -586,6 +610,18 @@ class GauntletUI(QMainWindow):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.report_view.toMarkdown())
         self.status_bar.showMessage("Report copied to clipboard!", 3000)
+
+    def _export_pdf(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Export PDF", "research_report.pdf", "PDF Files (*.pdf)")
+        if filename:
+            ExportManager.export_pdf(self.report_view, filename)
+            self.status_bar.showMessage(f"Exported to {filename}", 3000)
+
+    def _export_docx(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Export DOCX", "research_report.docx", "Word Documents (*.docx)")
+        if filename:
+            ExportManager.export_docx(self.report_view.toMarkdown(), filename)
+            self.status_bar.showMessage(f"Exported to {filename}", 3000)
 
     @pyqtSlot(str)
     def _append_log(self, text):

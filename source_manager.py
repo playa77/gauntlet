@@ -1,6 +1,5 @@
-# Script Version: 0.3.0 | Phase 2: Orchestration
-# Description: Thread-safe utility for rate-limited fetching and parsing.
-# Implementation: Fixed deadlock by moving sleep outside the lock.
+# Script Version: 0.4.0 | Phase 6: Export & News Mode
+# Description: Added RSS fetching capability using feedparser.
 
 import time
 import httpx
@@ -9,7 +8,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Dict, Any, Set
+from typing import Dict, Any, Set, List
 
 try:
     import fitz  # PyMuPDF
@@ -21,6 +20,11 @@ try:
 except ImportError:
     trafilatura = None
 
+try:
+    import feedparser
+except ImportError:
+    feedparser = None
+
 class SourceManager:
     def __init__(self, delay_ms: int = 500):
         self.requested_delay = delay_ms / 1000.0
@@ -31,7 +35,7 @@ class SourceManager:
         self._lock = threading.Lock() 
         
         self.headers = {
-            "User-Agent": "GauntletResearchBot/0.3.0 (Educational Research Project; Thread-Safe Rate Limiting)"
+            "User-Agent": "GauntletResearchBot/0.4.0 (Educational Research Project; Thread-Safe Rate Limiting)"
         }
         print(f"[SOURCE MANAGER] Initialized with thread-safe rate limiting (Delay: {self.enforced_delay}s).")
 
@@ -90,6 +94,44 @@ class SourceManager:
         except Exception as e:
             print(f"[ERROR] [SourceManager] Failed {url}: {e}")
             return {"url": url, "status": "error", "error": str(e)}
+
+    def fetch_rss(self, feed_url: str, keywords: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetches an RSS feed and filters entries by keywords (if provided).
+        Returns a list of dicts: {url, title, snippet, source_type='rss'}
+        """
+        if not feedparser:
+            print("[ERROR] feedparser not installed.")
+            return []
+
+        self._wait_for_slot()
+        print(f"[SOURCE MANAGER] Fetching RSS: {feed_url}")
+        
+        try:
+            feed = feedparser.parse(feed_url)
+            results = []
+            
+            for entry in feed.entries:
+                title = entry.get('title', '')
+                summary = entry.get('summary', '') or entry.get('description', '')
+                link = entry.get('link', '')
+                
+                # Simple keyword matching
+                text_to_check = (title + " " + summary).lower()
+                if keywords:
+                    if not any(k.lower() in text_to_check for k in keywords):
+                        continue
+                
+                results.append({
+                    "url": link,
+                    "title": title,
+                    "snippet": summary[:500], # Truncate for snippet
+                    "source_type": "rss"
+                })
+            return results
+        except Exception as e:
+            print(f"[ERROR] [SourceManager] RSS failed {feed_url}: {e}")
+            return []
 
     def _process_pdf_binary(self, url: str, binary_data: bytes) -> Dict[str, Any]:
         if not fitz:

@@ -1,5 +1,5 @@
-# Script Version: 0.9.4 | Phase 5: Polish & Depth Control
-# Description: Updated to use multiple token trackers (one per role).
+# Script Version: 0.9.5 | Phase 6: Export & News Mode
+# Description: Passes research_mode to agents.
 
 import os
 import json
@@ -24,7 +24,7 @@ from utils import ModelTokenTracker
 
 class ResearchOrchestrator:
     def __init__(self, thread_id: str = "default_research"):
-        print(f"[ORCHESTRATOR] Initializing Phase 5 Workflow...")
+        print(f"[ORCHESTRATOR] Initializing Phase 6 Workflow...")
         load_dotenv()
         self.thread_id = thread_id
         self.api_key = os.getenv("OPENROUTER_API_KEY")
@@ -202,13 +202,20 @@ class ResearchOrchestrator:
 
         search_depth_param = self.settings.get("parameters", {}).get("initial_search_depth", 2) if state.get("iteration_count", 0) == 0 else self.settings.get("parameters", {}).get("refinement_search_depth", 1)
         
-        candidates = self.search_agent.run(active_questions, depth=search_depth_param)
+        # Pass research_mode and iteration to agent
+        candidates = self.search_agent.run(
+            active_questions, 
+            depth=search_depth_param, 
+            research_mode=state.get("research_mode", "standard"),
+            iteration=state.get("iteration_count", 0)
+        )
+        
         quality = self.quality_agent.run(candidates)
         
         min_score = self.settings.get("parameters", {}).get("min_quality_score", 0.6)
         for src in quality["sources"]:
             if src.get('score', 0) >= (min_score - 0.1):
-                self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": "web"})
+                self.vector_store.add_source(src['snippet'], {"url": src['url'], "title": src['title'], "type": src.get("source_type", "web")})
         
         return {
             "sources": quality["sources"], 

@@ -1,5 +1,5 @@
-# Script Version: 0.9.1 | Phase 5: Polish & Depth Control
-# Description: Added gap-to-question generation and structured gap analysis.
+# Script Version: 0.9.6 | Phase 6: Export & News Mode
+# Description: Added News Mode logic to InitialSearchAgent (Turn 1 enforcement, Turn 2+ dynamic selection, RSS).
 
 import json
 import re
@@ -87,7 +87,7 @@ class InitialSearchAgent(BaseAgent):
         super().__init__(llm, prompts, settings)
         self.source_manager = source_manager
 
-    def run(self, questions: List[Dict], depth: int = 1) -> List[Dict]:
+    def run(self, questions: List[Dict], depth: int = 1, research_mode: str = "standard", iteration: int = 0) -> List[Dict]:
         try:
             from ddgs import DDGS
         except ImportError:
@@ -97,87 +97,155 @@ class InitialSearchAgent(BaseAgent):
                 print("[ERROR] ddgs/duckduckgo_search not installed.")
                 return []
             
-        print(f"[AGENT] [Search] Generating queries for {len(questions)} questions (Depth: {depth})...")
+        print(f"[AGENT] [Search] Mode: {research_mode} | Iteration: {iteration} | Questions: {len(questions)}")
         all_results = []
         p = self.prompts.get("search_query_generation", {})
         user_template = p.get("user_template", "Queries for: {question}")
         
         queries_per_q = self.params.get("search_queries_per_question", 3)
         results_per_q = self.params.get("search_results_per_query", 5)
+        news_feeds = self.settings.get("news_feeds", [])
         
         with DDGS() as ddgs:
             for q in questions:
                 try:
                     # 1. Generate Initial Queries
                     user_content = user_template.format(question=q['question'])
-                    response = self.llm.invoke([HumanMessage(content=user_content)])
-                    queries = self._extract_queries(response.content)
                     
-                    valid_queries = [s for s in queries if len(str(s).strip()) > 3][:queries_per_q]
+                    # If News Mode and Iteration > 0, ask for type classification
+                    if research_mode == "news" and iteration > 0:
+                        user_content += "\n\nIMPORTANT: For each query, specify if it should be a 'news' search or 'web' search. Output JSON: {\"queries\": [{\"text\": \"...\", \"type\": \"news\"}, ...]}"
+                    
+                    response = self.llm.invoke([HumanMessage(content=user_content)])
+                    
+                    # Extract queries (handling both simple list and typed list)
+                    queries_data = self._extract_queries_with_types(response.content)
+                    
+                    # Limit queries
+                    valid_queries = queries_data[:queries_per_q]
 
-                    for query in valid_queries:
-                        self.source_manager._wait_for_slot()
-                        print(f"[AGENT] [Search] Executing query (Depth 1): {query}")
+                    for q_item in valid_queries:
+                        query_text = q_item["text"]
+                        query_type = q_item.get("type", "web")
                         
-                        results = list(ddgs.text(query, max_results=results_per_q))
+                        # FORCE News Mode Logic
+                        if research_mode == "news":
+                            if iteration == 0:
+                                query_type = "news" # Turn 1 is always news
+                            # Turn 2+ uses the LLM's choice (query_type)
+                        else:
+                            query_type = "web" # Standard mode is always web
+
+                        self.source_manager._wait_for_slot()
+                        print(f"[AGENT] [Search] Executing ({query_type}): {query_text}")
+                        
+                        results = []
+                        
+                        # Execute Primary Search
+                        if query_type == "news":
+                            # DDG News
+                            try:
+                                news_gen = ddgs.news(query_text, max_results=results_per_q)
+                                results = list(news_gen)
+                                # Normalize DDG News results to match text results structure
+                                for r in results:
+                                    r['href'] = r.get('url') or r.get('href') # DDG news sometimes uses 'url'
+                            except Exception as e:
+                                print(f"[ERROR] DDG News failed: {e}")
+
+                            # RSS Feeds (Only if configured and Turn 1)
+                            if iteration == 0 and news_feeds:
+                                keywords = query_text.split()
+                                for feed in news_feeds:
+                                    rss_results = self.source_manager.fetch_rss(feed, keywords)
+                                    for rss_r in rss_results:
+                                        all_results.append({
+                                            "url": rss_r['url'],
+                                            "title": rss_r['title'],
+                                            "snippet": rss_r['snippet'],
+                                            "question_id": q['id'],
+                                            "source_type": "rss"
+                                        })
+                        else:
+                            # Standard Web Search
+                            results = list(ddgs.text(query_text, max_results=results_per_q))
+
+                        # Process Results
                         for r in results:
                             if isinstance(r, dict):
-                                all_results.append(self._fmt_result(r, q['id']))
+                                all_results.append(self._fmt_result(r, q['id'], source_type=query_type))
 
-                        # 2. Recursive Depth (if enabled)
+                        # 2. Recursive Depth (Level 2)
+                        # Rule: Level 2 is ALWAYS regular web search
                         if depth > 1 and results:
                             top_result = results[0]
-                            print(f"[AGENT] [Search] Recursion (Depth 2) on: {top_result.get('title')}")
+                            print(f"[AGENT] [Search] Recursion (Depth 2 - Web): {top_result.get('title')}")
                             
-                            # Generate follow-up query based on top result
-                            follow_up_query = f"{query} related to {top_result.get('title')}"
+                            follow_up_query = f"{query_text} related to {top_result.get('title')}"
                             self.source_manager._wait_for_slot()
                             
                             sub_results = list(ddgs.text(follow_up_query, max_results=2))
                             for sub in sub_results:
-                                all_results.append(self._fmt_result(sub, q['id']))
+                                all_results.append(self._fmt_result(sub, q['id'], source_type="web"))
                                 
                             if depth > 2 and sub_results:
-                                # Depth 3 (Max)
                                 sub_top = sub_results[0]
                                 deep_query = f"{follow_up_query} {sub_top.get('title')}"
                                 self.source_manager._wait_for_slot()
                                 deep_results = list(ddgs.text(deep_query, max_results=1))
                                 for d in deep_results:
-                                    all_results.append(self._fmt_result(d, q['id']))
+                                    all_results.append(self._fmt_result(d, q['id'], source_type="web"))
 
                 except Exception as e:
                     print(f"[ERROR] [Search] Failed query for Q{q['id']}: {e}")
                 
         return all_results
 
-    def _extract_queries(self, content):
+    def _extract_queries_with_types(self, content):
+        """
+        Extracts queries and normalizes them to [{"text": "...", "type": "..."}].
+        """
         queries = []
         try:
             data = extract_json_from_text(content)
+            
+            # Case 1: {"queries": [{"text": "...", "type": "..."}]}
             if isinstance(data, dict):
-                for key in ["queries", "Queries", '"queries"']:
+                for key in ["queries", "Queries"]:
                     if key in data and isinstance(data[key], list):
-                        queries = data[key]
+                        raw_list = data[key]
+                        for item in raw_list:
+                            if isinstance(item, dict):
+                                queries.append({"text": item.get("text", ""), "type": item.get("type", "web")})
+                            elif isinstance(item, str):
+                                queries.append({"text": item, "type": "web"})
                         break
+            
+            # Case 2: List of strings
             elif isinstance(data, list):
-                queries = data
+                for item in data:
+                    if isinstance(item, str):
+                        queries.append({"text": item, "type": "web"})
+                    elif isinstance(item, dict):
+                         queries.append({"text": item.get("text", ""), "type": item.get("type", "web")})
+
         except: pass
         
+        # Fallback regex
         if not queries:
             matches = re.findall(r'"([^"]+)"', content)
-            if matches: queries = [m for m in matches if m.lower() not in ["queries", "query"]]
-        if not queries:
-            queries = [item.strip().strip('"').strip("'") for item in content.split(',')]
+            if matches: 
+                queries = [{"text": m, "type": "web"} for m in matches if m.lower() not in ["queries", "query", "text", "type"]]
+        
         return queries
 
-    def _fmt_result(self, r, qid):
+    def _fmt_result(self, r, qid, source_type="web"):
         return {
-            "url": r.get('href'),
+            "url": r.get('href') or r.get('url'),
             "title": r.get('title'),
-            "snippet": r.get('body'),
+            "snippet": r.get('body') or r.get('snippet', ''),
             "question_id": qid,
-            "source_type": "web"
+            "source_type": source_type
         }
 
 class SourceQualityAgent(BaseAgent):

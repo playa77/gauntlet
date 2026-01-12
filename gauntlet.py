@@ -1,5 +1,5 @@
-# Script Version: 0.9.8 | Phase 6: Refactor
-# Description: Main application entry point. Aggressively refactored.
+# Script Version: 0.9.9 | Phase 7: Production Release
+# Description: Main entry point. Bootstraps config on launch.
 
 import sys
 import signal
@@ -14,7 +14,8 @@ from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QColor, QFont
 from dotenv import load_dotenv
 
-from utils import setup_project_files, LogStream, crash_handler
+# Updated import
+from utils import bootstrap_configuration, LogStream, crash_handler
 from settings_manager import SettingsManager, ModelManager, PromptManager
 from settings_ui import SettingsDialog
 from export_manager import ExportManager
@@ -30,7 +31,7 @@ sys.excepthook = crash_handler
 class GauntletUI(QMainWindow):
     def __init__(self, log_stream):
         super().__init__()
-        self.setWindowTitle("Gauntlet Deep Research (v0.9.8)")
+        self.setWindowTitle("Gauntlet Deep Research (v0.9.9)")
         self.resize(1400, 900)
 
         self.settings_manager = SettingsManager()
@@ -351,7 +352,9 @@ class GauntletUI(QMainWindow):
 
 def main():
     load_dotenv()
-    setup_project_files()
+    # BOOTSTRAP: Generate config files if missing
+    bootstrap_configuration()
+    
     app = QApplication(sys.argv)
     log_stream = LogStream()
     sys.stdout = log_stream
